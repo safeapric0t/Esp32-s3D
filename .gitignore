@@ -1,0 +1,41 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# ESP-IDF
+build/
+sdkconfig
+sdkconfig.old
+
+# Web UI
+web_ui_src/node_modules/
+web_ui_src/dist/
+web_ui_src/.vite/
+web_ui_src/*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Embedded web UI (generated)
+main/web_ui_embed/
+
+# Environment
+.env
+.env.local
+
+# Temporary files
+*.tmp
+*.temp
