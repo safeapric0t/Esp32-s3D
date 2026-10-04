@@ -31,7 +31,7 @@ BambuLab-style web interface for Ender 3 S1 using ESP32-S3 N16R8 via USB OTG.
 ### 1. Clone and Setup
 
 ```bash
-git clone https://github.com/yourusername/Esp32-s3D.git
+git clone https://github.com/safeapric0t/Esp32-s3D.git
 cd Esp32-s3D
 ```
 
