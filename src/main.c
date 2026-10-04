@@ -25,14 +25,14 @@ static const char* TAG = "MAIN";
 
 // System configuration
 static system_config_t s_config = {
-    .wifi_ssid = "YOUR_WIFI_SSID",
-    .wifi_password = "YOUR_WIFI_PASSWORD",
+    .wifi_ssid = "TURKNET_B907B",
+    .wifi_password = "TYkyRDkN",
     .wifi_ap_ssid = "Ender3-Controller",
     .wifi_ap_password = "ender3controller",
-    .ap_mode = true,  // Default to AP mode for easy setup
+    .ap_mode = false,  // STA mode - connect to your WiFi
     .auth = {
         .enabled = true,
-        .key = "changeme123"  // Default API key - change in production!
+        .key = "ender3s1secure2024"  // Change this in production!
     },
     .printer_name = "Ender 3 S1",
     .baud_rate = 115200,
