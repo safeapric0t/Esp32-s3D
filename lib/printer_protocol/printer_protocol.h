@@ -50,6 +50,9 @@ esp_err_t printer_request_position(void);
 // Request SD status (M27)
 esp_err_t printer_request_sd_status(void);
 
+// Request SD file list (M20)
+esp_err_t printer_request_sd_files(void);
+
 // Set target temperatures
 esp_err_t printer_set_hotend_temp(float temp);
 esp_err_t printer_set_bed_temp(float temp);

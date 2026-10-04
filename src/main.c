@@ -156,7 +156,20 @@ static void on_gcode_command(const char* gcode, void* ctx) {
 }
 
 static void on_file_upload(const char* filename, const uint8_t* data, size_t len, void* ctx) {
-    ESP_LOGI(TAG, "File uploaded: %s", filename);
+    ESP_LOGI(TAG, "File upload event triggered for: %s", filename);
+
+    // The file has already been written to LittleFS by the web server handler.
+    // We now trigger the copy to printer SD.
+
+    ESP_LOGI(TAG, "Initiating copy to printer SD for: %s", filename);
+    esp_err_t err = storage_copy_to_printer_sd(filename);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to copy %s to printer SD: %s", filename, esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "Successfully copied %s to printer SD", filename);
+    }
+
     web_server_broadcast_file_list(NULL, 0);  // Trigger refresh
 }
 
@@ -166,6 +179,7 @@ static void on_file_delete(const char* filename, bool on_printer_sd, void* ctx) 
 }
 
 static void on_file_copy_to_printer(const char* filename, void* ctx) {
+    ESP_LOGI(TAG, "Requested copy to printer SD: %s", filename);
     storage_copy_to_printer_sd(filename);
 }
 
