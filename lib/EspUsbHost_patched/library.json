@@ -1,0 +1,22 @@
+{
+  "name": "EspUsbHost",
+  "version": "2.10.0-patched",
+  "description": "USB Host library for ESP32-S3, ESP32-S2 and ESP32-P4 Arduino sketches (patched for ESP-IDF 5.x compatibility)",
+  "keywords": "usb, host, cdc, hid, msc, audio, video, ccid",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tanakamasayuki/EspUsbHost"
+  },
+  "authors": [
+    {
+      "name": "TANAKA Masayuki",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/tanakamasayuki/EspUsbHost",
+  "keywords": "usb, host, cdc, hid, msc, audio, video, ccid",
+  "frameworks": ["arduino"],
+  "platforms": ["espressif32"],
+  "headers": "EspUsbHost.h"
+}

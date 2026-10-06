@@ -2,6 +2,7 @@
 
 /* Print State Colors */
 :root {
+  --accent-primary: #ff8c00;
   --state-idle: #6a6a8a;
   --state-printing: #00d4aa;
   --state-paused: #ffd93d;

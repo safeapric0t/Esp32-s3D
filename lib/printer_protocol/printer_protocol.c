@@ -173,8 +173,44 @@ static void process_printer_line(const char* line) {
         parse_position_response(line);
     }
     
-    // Parse SD progress
-    if (strstr(line, "SD printing byte")) {
+// SD file list buffer
+static file_info_t s_sd_files[50];
+static uint8_t s_sd_files_count = 0;
+static bool s_collecting_sd_files = false;
+
+// Process a complete line from printer
+static void process_printer_line(const char* line) {
+    if (!line) return;
+
+    ESP_LOGD(TAG, "Processing: %s", line);
+
+    // Handle SD file listing (M20 response)
+    if (s_collecting_sd_files) {
+        if (strstr(line, "File:")) {
+            if (s_sd_files_count < 50) {
+                // Example: "ok File: a.gcode Size: 1234"
+                char filename[64];
+                uint32_t size = 0;
+                if (sscanf(line, "ok File: %s Size: %u", filename, &size) == 2 ||
+                   sscanf(line, "File: %s Size: %u", filename, &size) == 2) {
+
+                    strncpy(s_sd_files[s_sd_files_count].name, filename, sizeof(s_sd_files[s_sd_files_count].name) - 1);
+                    s_sd_files[s_sd_files_count].size = size;
+                    s_sd_files[s_sd_files_count].on_printer_sd = true;
+                    s_sd_files[s_sd_files_count].is_dir = false;
+                    s_sd_files_count++;
+                    ESP_LOGI(TAG, "Collected SD file: %s (%u bytes)", filename, size);
+                }
+            }
+        } else if (strstr(line, "ok") || strstr(line, "end of list")) {
+            // Check if we should stop collecting or if it's just a regular OK
+            // Usually, M20 sends files and then a final OK or the next command
+        }
+    }
+
+    // Callback for raw line
+    if (s_callbacks.on_line_received) {
+
         parse_sd_progress(line);
     }
     
@@ -544,6 +580,13 @@ esp_err_t printer_request_position(void) {
 esp_err_t printer_request_sd_status(void) {
     char response[256];
     return usb_cdc_send_command("M27", response, sizeof(response), 2000);
+}
+
+esp_err_t printer_request_sd_files(void) {
+    char response[256];
+    s_collecting_sd_files = true;
+    s_sd_files_count = 0;
+    return usb_cdc_send_command("M20", response, sizeof(response), 2000);
 }
 
 esp_err_t printer_set_hotend_temp(float temp) {

@@ -16,7 +16,7 @@ import { Modal } from './components/Modal'
 
 type Tab = 'monitor' | 'files' | 'control' | 'console' | 'camera' | 'settings'
 
-export function App() {
+export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('monitor')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [controlPanelOpen, setControlPanelOpen] = useState(false)

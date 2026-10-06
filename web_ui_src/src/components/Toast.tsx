@@ -76,6 +76,7 @@ function ToastContainer({ toasts, onRemove }: ToastContainerProps) {
   )
 }
 
+export { ToastContainer };
 export function toast() {}
 toast.success = (msg: string) => console.log('success:', msg)
 toast.error = (msg: string) => console.log('error:', msg)

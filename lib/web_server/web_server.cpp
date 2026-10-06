@@ -174,17 +174,20 @@ static void handle_api_files(AsyncWebServerRequest* request) {
         request->send(401, "application/json", "{\"error\":\"Unauthorized\"}");
         return;
     }
-    
+
+    // 1. Request SD files from printer first
+    printer_request_sd_files();
+
     file_info_t* files = NULL;
     uint8_t count = 0;
-    
-    // Get files from both LittleFS and printer SD
+
+    // 2. Get files from LittleFS
     storage_list_files(&files, &count);
-    
+
     char* json = file_list_to_json(files, count, true);
-    
+
     if (files) free(files);
-    
+
     if (json) {
         AsyncWebServerResponse* response = request->beginResponse(200, "application/json", json);
         response->addHeader("Access-Control-Allow-Origin", "*");
@@ -227,11 +230,13 @@ static void handle_api_file_upload(AsyncWebServerRequest* request,
             upload_file = NULL;
         }
         ESP_LOGI(TAG, "Upload finished: %s (%d bytes)", filename.c_str(), index + len);
-        
+
         if (s_callbacks.on_file_upload) {
+            // Corrected: We don't pass data pointer because the file is already on disk in LittleFS
+            // But we pass the length so the callback knows the size
             s_callbacks.on_file_upload(filename.c_str(), NULL, index + len, s_callbacks.user_ctx);
         }
-        
+
         request->send(200, "application/json", "{\"success\":true,\"message\":\"File uploaded\"}");
     }
 }
