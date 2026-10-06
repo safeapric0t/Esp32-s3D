@@ -1,4 +1,5 @@
-export function CameraView() {
+import { useState } from 'react';
+
   const [streaming, setStreaming] = useState(false)
   const [snapshot, setSnapshot] = useState<string | null>(null)
 

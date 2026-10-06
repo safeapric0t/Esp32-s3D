@@ -1,11 +1,12 @@
 import { PrinterStatus } from '../types/printer'
-
+import { useState } from 'react';
 interface ControlPanelProps {
   status: PrinterStatus | null
   onSendGcode: (command: string) => void
 }
 
-export function ControlPanel({ status, onSendGcode }: ControlPanelProps) {
+import { useState } from 'react';
+
   const [jogDistance, setJogDistance] = useState(1)
   const [hotendTemp, setHotendTemp] = useState(0)
   const [bedTemp, setBedTemp] = useState(0)

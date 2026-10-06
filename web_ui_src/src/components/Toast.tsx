@@ -54,7 +54,8 @@ interface ToastContainerProps {
   onRemove: (id: number) => void
 }
 
-function ToastContainer({ toasts, onRemove }: ToastContainerProps) {
+export { ToastContainer };
+
   return (
     <div className="toast-container" style={{ pointerEvents: 'none' }}>
       {toasts.map(t => (
