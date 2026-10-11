@@ -10,13 +10,13 @@
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
-const char* WIFI_SSID = "TURKNET_B907B";
-const char* WIFI_PASSWORD = "TYkyRDkN";
+// Set these values for station mode, or leave AP_MODE enabled for a
+// standalone setup network.  Do not commit real Wi-Fi credentials.
+const char* WIFI_SSID = "YOUR_WIFI_SSID";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 const char* AP_SSID = "Ender3-Controller";
 const char* AP_PASSWORD = "ender3controller";
-const bool AP_MODE = false;
-
-const char* API_KEY = "ender3s1secure2024";
+const bool AP_MODE = true;
 
 // ============================================================================
 // USB

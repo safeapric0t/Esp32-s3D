@@ -1,230 +1,222 @@
-# Esp32-s3D - Ender 3 S1 ESP32-S3 Controller
+# Ender 3 S1 ESP32-S3 Controller
 
-BambuLab-style web interface for Ender 3 S1 using ESP32-S3 N16R8 via USB OTG.
+Ender 3 S1 yazıcıyı ESP32-S3 üzerinden USB Host bağlantısıyla ağa açan, web tabanlı uzaktan kontrol ve izleme projesi.
 
-## Features
+Projenin hedefi; yazıcıyı BambuLab benzeri bir çalışma akışına yaklaştırmaktır:
 
-- 🌐 **Web UI** - React-based BambuLab-style dashboard
-- 📡 **USB OTG Communication** - Direct USB CDC/ACM to printer MCU
-- 📁 **File Management** - Upload G-code to ESP32 LittleFS, copy to printer SD
-- 📊 **Real-time Monitoring** - Temperatures, position, progress via WebSocket
-- 🎮 **Full Control** - Movement, temperature, fans, custom G-code
-- 📷 **Camera Ready** - Abstraction layer for future ESP32-CAM/USB UVC
-- 🔐 **API Key Auth** - Simple token-based authentication
-- 📱 **Responsive** - Works on desktop and mobile
+- sıcaklık, konum, baskı durumu ve ilerleme takibi,
+- yazıcının SD kartındaki G-code dosyalarını listeleme ve başlatma,
+- ESP32’ye G-code yükleme,
+- ESP32’de saklanan G-code’u USB üzerinden satır satır yazıcıya gönderme,
+- sıcaklık, fan, eksen hareketi, auto home ve ham G-code kontrolü.
 
-## Hardware Requirements
+## Proje durumu
 
-- Ender 3 S1 (STM32F401 MCU with USB CDC)
-- ESP32-S3 N16R8 (16MB Flash, 8MB PSRAM)
-- USB-C to USB-C cable (data + power)
+Proje aktif geliştirme aşamasındadır. Temel USB haberleşmesi, web arayüzü, telemetri, SD dosya listeleme, SD’den baskı başlatma ve ESP32 üzerinden G-code akışı çalışır.
 
-## Software Stack
+### Dosya saklama ve baskı akışı
 
-- **Firmware**: ESP-IDF v5.2+ via PlatformIO
-- **Web UI**: React 18 + TypeScript + Vite
-- **Communication**: USB Host CDC/ACM → Marlin G-code protocol
-- **Storage**: LittleFS (ESP32 internal flash) + Printer SD card
+1. Web arayüzünden yüklenen dosya önce ESP32’nin dahili SPIFFS alanına yazılır.
+2. Sistem dosyayı yazıcının SD kartına `M28` / `M29` ile aktarmayı dener.
+3. Yazıcı SD’ye yazmayı kabul ederse dosya yazıcı SD’sinde görünür ve SD baskısı olarak başlatılır.
+4. Yazıcı `M28` ile dosya oluşturmayı reddederse dosya ESP32’de tutulur ve arayüzden ESP32 stream baskısı olarak başlatılır.
 
-## Quick Start
+Bu nedenle SD karttan dosya okumak çalışırken karta yazmak çalışmayabilir. Bu durumda kartın yazma koruması, dosya sistemi, boş alanı veya Marlin yapılandırması kontrol edilmelidir.
 
-### 1. Clone and Setup
+## Donanım
+
+- Creality Ender 3 S1
+- Marlin tabanlı yazıcı firmware’i
+- ESP32-S3 N16R8 / 16 MB Flash / 8 MB PSRAM
+- Veri destekli USB-C kablosu
+
+ESP32-S3 üzerindeki USB-C OTG/Host portunu yazıcının USB-C portuna bağlayın. Sadece şarj destekleyen kablolar USB haberleşmesi sağlamaz.
+
+## Yazılım mimarisi
+
+```text
+Web tarayıcısı
+    │ HTTP REST + WebSocket
+    ▼
+ESP32-S3 firmware
+    │ USB Host CDC/ACM
+    ▼
+Ender 3 S1 Marlin
+    ├─ sıcaklık ve konum telemetrisi
+    ├─ G-code komutları
+    ├─ yazıcı SD dosya listesi
+    └─ SD baskı kontrolü
+```
+
+### Kullanılan teknoloji
+
+- Firmware: Arduino framework + PlatformIO
+- Hedef kart: `esp32s3_n16r8`
+- USB: ESP32-S3 USB Host CDC/ACM
+- Ağ: ESP32 Wi-Fi AP veya Station modu
+- Web sunucusu: ESPAsyncWebServer
+- Gerçek zamanlı iletişim: WebSocket
+- Dahili dosya alanı: ESP32 SPIFFS
+- Arayüz: React 18, TypeScript, Vite, Recharts
+
+## Kurulum
+
+### Gereksinimler
+
+- PlatformIO CLI veya VS Code + PlatformIO eklentisi
+- Node.js ve npm
+- USB veri kablosu
+- ESP32-S3 kartı için uygun USB sürücüsü
+
+### Depoyu alma
 
 ```bash
 git clone https://github.com/safeapric0t/Esp32-s3D.git
 cd Esp32-s3D
 ```
 
-### 2. Configure WiFi & API Key
+### Wi-Fi yapılandırması
 
-Edit `src/main.c` and update:
-```c
-static system_config_t s_config = {
-    .wifi_ssid = "YOUR_WIFI_SSID",
-    .wifi_password = "YOUR_WIFI_PASSWORD",
-    .wifi_ap_ssid = "Ender3-Controller",
-    .wifi_ap_password = "ender3controller",
-    .ap_mode = true,  // Start in AP mode for easy setup
-    .auth = {
-        .enabled = true,
-        .key = "changeme123"  // CHANGE THIS!
-    },
-    // ...
-};
+Varsayılan açık kaynak yapılandırması AP modunu kullanır. ESP32 açıldığında:
+
+```text
+SSID:     Ender3-Controller
+Password: ender3controller
+Address:  http://192.168.4.1
 ```
 
-### 3. Build Web UI (Optional - prebuilt included)
+Station moduna geçmek için [`src/main.cpp`](src/main.cpp) içindeki şu değerleri kendi ağınıza göre değiştirin:
+
+```cpp
+const char* WIFI_SSID = "YOUR_WIFI_SSID";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const bool AP_MODE = false;
+```
+
+Gerçek Wi-Fi bilgilerini Git’e commit etmeyin.
+
+### Web arayüzünü derleme
 
 ```bash
 cd web_ui_src
-npm install
+npm ci
 npm run build
 cd ..
-./scripts/build_web_ui.sh
 ```
 
-### 4. Build & Flash Firmware
+Derleme çıktısı `data/webui/` klasörüne yazılır ve SPIFFS imajına dahil edilir.
+
+### Firmware’i yükleme
 
 ```bash
-# Using PlatformIO
-pio run -t upload
-
-# Or with ESP-IDF directly
-idf.py build flash monitor
+pio run -e esp32s3 -t upload --upload-port COM13
+pio run -e esp32s3 -t uploadfs --upload-port COM13
 ```
 
-### 5. Connect Hardware
+`COM13` yerine bilgisayarınızdaki ESP32-S3 portunu kullanın. `uploadfs` işlemi ESP32’nin dahili dosya alanını yeniden yazar; ESP32’deki G-code dosyalarını önceden yedekleyin.
 
-1. Power off Ender 3 S1
-2. Connect USB-C cable: ESP32-S3 USB-C → Ender 3 S1 USB-C (Type-C port)
-3. Power on both devices
-4. ESP32-S3 will create WiFi AP: `Ender3-Controller` / `ender3controller`
+Seri monitör:
 
-### 6. Access Web UI
-
-- **AP Mode**: http://192.168.4.1
-- **STA Mode**: http://<assigned-ip>
-- **API Key**: `changeme123` (change in settings!)
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        ESP32-S3 N16R8                           │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
-│  │  USB OTG    │  │    WiFi     │  │   SPI/ SD   │             │
-│  │   HOST      │  │  AP/STA     │  │   (LittleFS)│             │
-│  │  (CDC/ACM)  │  │  + WebSocket│  │  G-code dep.│             │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘             │
-│         │                │                │                     │
-│         ▼                ▼                ▼                     │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │              FIRMWARE (ESP-IDF)                          │   │
-│  │  USB Host CDC → Printer Protocol → Web Server → Web UI  │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-         │
-         │ USB-C Cable (OTG Host → Device)
-         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   ENDER 3 S1 (STM32F401)                        │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
-│  │  USB CDC    │  │   Marlin    │  │   SD Card   │             │
-│  │  (Device)   │  │  Firmware   │  │  (Printer)  │             │
-│  └─────────────┘  └─────────────┘  └─────────────┘             │
-└─────────────────────────────────────────────────────────────────┘
+```bash
+pio device monitor -p COM13 -b 115200
 ```
 
-## API Endpoints
+## Web arayüzü
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/status` | GET | Printer status (temps, position, progress) |
-| `/api/printer` | GET | Printer info |
-| `/api/files` | GET | List files (ESP32 + Printer SD) |
-| `/api/files/upload` | POST | Upload G-code (multipart) |
-| `/api/files/delete` | DELETE | Delete file |
-| `/api/files/copy-to-printer` | POST | Copy to printer SD (M28/M29) |
-| `/api/print/start` | POST | Start print |
-| `/api/print/pause` | POST | Pause print |
-| `/api/print/resume` | POST | Resume print |
-| `/api/print/cancel` | POST | Cancel print |
-| `/api/gcode` | POST | Send raw G-code |
-| `/api/move` | POST | Jog axes |
-| `/api/temperature` | POST | Set temperatures |
-| `/api/fan` | POST | Set fan speed |
-| `/api/home` | POST | Home axes |
-| `/ws` | WS | Real-time updates |
+Arayüzdeki ana bölümler:
 
-## WebSocket Messages
+- **Dashboard:** aktif baskı, ilerleme, sıcaklıklar, bağlantı ve hızlı yükleme
+- **Files:** ESP32 dosyaları ile yazıcı SD dosyaları, silme, SD’ye kopyalama ve baskı başlatma
+- **Control:** hotend/bed sıcaklığı, X/Y/Z jog hareketleri ve auto home
+- **Console:** ham G-code gönderme ve yazıcı cevaplarını izleme
+- **Camera:** ileride kamera entegrasyonu için ayrılmış alan
+- **Settings:** arayüz ayarları ve bağlantı bilgileri
 
-```json
-// Server → Client
-{"type": "status", "data": {...}}
-{"type": "progress", "data": {...}}
-{"type": "log", "data": {"level": "info", "message": "ok"}}
-{"type": "state_change", "data": {"state": "printing", "state_str": "Printing"}}
-{"type": "file_list", "data": [...]}
-```
+Kamera bağlantısı bu sürümde uygulanmış değildir.
 
-## Development
+## REST API
 
-### Project Structure
+| Endpoint | Method | Açıklama |
+|---|---:|---|
+| `/api/status` | GET | Sıcaklık, konum, baskı ve bağlantı durumu |
+| `/api/files` | GET | ESP32 ve yazıcı SD dosyalarını listeler |
+| `/api/files/printer-sd` | GET | Yalnızca yazıcı SD dosyaları |
+| `/api/files/upload` | POST | Multipart G-code yükleme ve otomatik SD aktarım denemesi |
+| `/api/files/download?name=...` | GET | ESP32’deki G-code’u indirir |
+| `/api/files/delete?name=...` | DELETE | ESP32 veya yazıcı SD dosyasını siler |
+| `/api/files/copy-to-printer?name=...` | POST | ESP32 dosyasını yazıcı SD’sine kopyalamayı dener |
+| `/api/print/start?file=...&mode=stream\|sd` | POST | ESP32 stream veya SD baskısı başlatır |
+| `/api/print/pause` | POST | Baskıyı duraklatır |
+| `/api/print/resume` | POST | Baskıyı devam ettirir |
+| `/api/print/cancel` | POST | Baskıyı durdurur |
+| `/api/gcode?command=...` | POST | Ham G-code gönderir |
+| `/api/move?...` | POST | Göreli veya mutlak eksen hareketi |
+| `/api/temperature?...` | POST | Hotend ve tabla hedef sıcaklığı |
+| `/api/fan?...` | POST | Fan hızı |
+| `/api/home?...` | POST | X/Y/Z auto home |
+| `/ws` | WebSocket | Durum, ilerleme, log ve dosya listesi olayları |
 
-```
+## Güvenlik notu
+
+Bu sürüm yerel ağ ve ESP32 erişim noktası kullanımı için tasarlanmıştır. Web sunucusunda gerçek bir kullanıcı hesabı veya TLS katmanı bulunmaz; cihazı doğrudan internete açmayın. Wi-Fi parolanızı ve ağ erişiminizi güvenli tutun.
+
+## Proje yapısı
+
+```text
 Esp32-s3D/
-├── platformio.ini          # PlatformIO config
-├── partitions.csv          # Partition table (8MB LittleFS)
-├── sdkconfig.defaults      # ESP32-S3 config
-├── scripts/
-│   └── build_web_ui.sh     # Build & embed web UI
-├── src/
-│   └── main.c              # Application entry
+├── data/webui/             # ESP32’ye yüklenecek derlenmiş arayüz
+├── include/                # Ortak başlıklar
 ├── lib/
-│   ├── common/             # Shared types, ring buffer, JSON
-│   ├── usb_host_cdc/       # USB Host CDC/ACM driver
-│   ├── printer_protocol/   # G-code streaming & parsing
-│   ├── web_server/         # HTTP + WebSocket + REST API
-│   ├── storage/            # LittleFS + Printer SD bridge
-│   └── camera_abstraction/ # Future camera support
-└── web_ui_src/             # React frontend source
-    ├── src/
-    │   ├── components/     # UI components
-    │   ├── hooks/          # React hooks
-    │   ├── services/       # API client
-    │   ├── types/          # TypeScript types
-    │   └── styles/         # CSS (BambuLab dark theme)
-    └── package.json
+│   └── EspUsbHost_patched/ # USB Host kütüphanesi
+├── scripts/                # Yardımcı derleme betikleri
+├── src/
+│   ├── main.cpp            # Wi-Fi, USB Host ve ana çalışma döngüsü
+│   ├── web_server.cpp      # REST API, WebSocket ve dosya işlemleri
+│   ├── response_parser.*   # Marlin cevap/telemetri ayrıştırma
+│   ├── gcode_streamer.*    # ESP32’den G-code akışı
+│   ├── command_scheduler.* # Komut ve ACK yönetimi
+│   └── printer_manager.*   # Yazıcı durum yönetimi
+├── web_ui_src/             # React + TypeScript kaynak kodu
+├── partitions.csv          # Flash bölümlendirmesi
+├── platformio.ini          # PlatformIO yapılandırması
+└── README.md
 ```
 
-### Adding Camera Support
+## Sorun giderme
 
-1. Implement `camera_interface_t` in `lib/camera_abstraction/`
-2. Call `camera_set_interface(&your_camera_impl)` in `app_main()`
-3. Camera UI already has placeholder in Monitor tab
+### USB yazıcı görünmüyor
 
-## Configuration
+- USB-C kablonun veri taşıdığını kontrol edin.
+- Yazıcının USB-C portunu bilgisayarla test edin.
+- ESP32-S3 üzerindeki OTG/Host portunu kullandığınızdan emin olun.
+- Seri monitörde USB enumeration mesajlarını kontrol edin.
 
-Key settings in `src/main.c`:
+### SD dosyaları görünmüyor
 
-```c
-static system_config_t s_config = {
-    .wifi_ssid = "YOUR_SSID",           // STA mode WiFi
-    .wifi_password = "YOUR_PASSWORD",
-    .wifi_ap_ssid = "Ender3-Controller", // AP mode
-    .wifi_ap_password = "ender3controller",
-    .ap_mode = true,                     // true = AP, false = STA
-    .auth = { .enabled = true, .key = "your-api-key" },
-    .printer_name = "Ender 3 S1",
-    .auto_connect = true,
-    .status_interval_ms = 2000,
-};
-```
+- Yazıcıyı ve ESP32’yi yeniden başlatın.
+- SD kartın yazıcı tarafından tanındığını kontrol edin.
+- Arayüzü `Ctrl+F5` ile yenileyin.
 
-## Troubleshooting
+### Upload sonrası SD’ye kopyalama başarısız
 
-### USB Not Connecting
-- Check USB-C cable supports data (not charge-only)
-- Verify Ender 3 S1 USB port works (try with PC)
-- Check `dmesg` / serial monitor for USB enumeration
+Yazıcı `M28` komutuna `open failed` döndürüyorsa SD kart okunabiliyor olsa bile yazılamıyor olabilir. Başka bir FAT32 kartla deneyin; kartı formatlamadan önce içindeki dosyaları yedekleyin.
 
-### Web UI Not Loading
-- Ensure web UI was built and embedded (`scripts/build_web_ui.sh`)
-- Check LittleFS partition mounted (see serial monitor)
-- Try hard refresh (Ctrl+Shift+R)
+### Baskı başlamıyor
 
-### Print Stops Unexpectedly
-- Check USB cable quality (use short, high-quality cable)
-- Monitor `consecutive_errors` in status
-- Ensure printer firmware has USB CDC enabled
+- Dosyanın arayüzde `ESP32` veya `SD` olarak doğru işaretlendiğini kontrol edin.
+- ESP32 dosyaları için `stream` yolu, yazıcı SD dosyaları için `sd` yolu kullanılır.
+- Gerçek baskıdan önce `G28` gibi küçük ve güvenli bir komutla USB haberleşmesini test edin.
+- Acil durum dışında normal durdurma için arayüzdeki Stop komutunu kullanın; `M112` yalnızca acil durdurma içindir.
 
-## License
+## Katkı
 
-MIT License - See LICENSE file
+Issue ve pull request göndermeden önce:
 
-## Credits
+1. Gerçek Wi-Fi bilgilerini, API anahtarlarını ve kişisel G-code dosyalarını kaldırın.
+2. Web arayüzünü `npm run build` ile derleyin.
+3. Firmware’i `pio run -e esp32s3` ile doğrulayın.
+4. Değişikliğin donanım gerektirip gerektirmediğini README’ye ekleyin.
 
-- ESP-IDF by Espressif
-- PlatformIO
-- React, Vite, Recharts
-- BambuLab for UI inspiration
+## Lisans
+
+Bu proje MIT lisansı altında yayımlanmıştır.
