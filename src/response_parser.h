@@ -59,14 +59,16 @@ public:
 
         // M20 file list
         if (line.startsWith("Begin file list") || line.startsWith("Begin file list:")) {
+            file_list_active_ = true;
             if (callback_) callback_("file_list_begin", "");
         }
         if (line.startsWith("End file list") || line.startsWith("End file list:")) {
             if (callback_) callback_("file_list_end", "");
+            file_list_active_ = false;
         }
 
         // M20 file list entries
-        if (line.length() > 0 && 
+        if (file_list_active_ && line.length() > 0 && 
             !line.startsWith("ok") && 
             !line.startsWith("Error") && 
             !line.startsWith("Error:") && 
@@ -87,24 +89,39 @@ public:
             String cleanLine = line;
             cleanLine.trim();
             
-            // Marlin normally returns "NAME.GCO 12345", but some USB/SD
-            // combinations concatenate the size or the next token.  Keep the
-            // filename through the last recognised G-code extension and drop
-            // everything after it.
+            // Marlin normally returns "NAME.GCO 12345". Some USB/SD
+            // combinations concatenate the size or the next entry, so use the
+            // first complete G-code extension as the end of the filename.
+            // Using the last extension produced values such as
+            // "GLOCK4~1.GCO.GCO" and merged two entries into one name.
             String upper = cleanLine;
             upper.toUpperCase();
             int extension_end = -1;
             const char* extensions[] = { ".GCODE", ".GCO", ".G" };
             const int extension_lengths[] = { 6, 4, 2 };
             for (int i = 0; i < 3; i++) {
-                int pos = upper.lastIndexOf(extensions[i]);
-                if (pos >= 0 && pos + extension_lengths[i] > extension_end) {
-                    extension_end = pos + extension_lengths[i];
+                int pos = upper.indexOf(extensions[i]);
+                while (pos >= 0) {
+                    int end = pos + extension_lengths[i];
+                    // A short .G suffix is only valid at a token boundary;
+                    // otherwise it would match the .G prefix of .GCO.
+                    bool boundary = end >= (int)upper.length() ||
+                                    upper[end] == ' ' || upper[end] == '\t' ||
+                                    upper[end] == '\r' || upper[end] == '\n' ||
+                                    upper[end] == '.';
+                    if (boundary && (extension_end < 0 || pos < extension_end)) {
+                        extension_end = end;
+                    }
+                    if (extension_end >= 0) break;
+                    pos = upper.indexOf(extensions[i], pos + 1);
                 }
             }
 
             bool isFile = extension_end > 1;
             if (isFile) cleanLine = cleanLine.substring(0, extension_end);
+            // If a size and another filename were glued to this line, do not
+            // expose the ambiguous combined token in the UI.
+            if (cleanLine.indexOf(' ') >= 0 || cleanLine.indexOf('\t') >= 0) isFile = false;
 
             if (isFile && cleanLine.length() > 0) {
                 String filename = cleanLine;
@@ -133,6 +150,7 @@ public:
 
 private:
     std::function<void(const String&, const String&)> callback_;
+    bool file_list_active_ = false;
 
     void parse_temperature(const String& line) {
         int value_offset = 2;

@@ -1,5 +1,5 @@
 import React, { useEffect, useCallback } from 'react'
-import { FileInfo } from '../types/printer'
+import { FileInfo, UploadResult } from '../types/printer'
 import { api } from '../services/api'
 
 export function useFiles() {
@@ -18,17 +18,12 @@ export function useFiles() {
       const spiffsFiles = Array.isArray(rawSpiffsFiles) ? rawSpiffsFiles : []
       const sdFiles = Array.isArray(rawSdFiles) ? rawSdFiles : []
 
-      const sdMap = new Map(sdFiles.map(f => [f.name, f]))
-      const merged = spiffsFiles.map(f => {
-        const sdVersion = sdMap.get(f.name)
-        if (sdVersion) {
-          sdMap.delete(f.name)
-          return { ...f, on_printer_sd: true }
-        }
-        return f
-      })
-      const remainingSd = Array.from(sdMap.values())
-      setFiles([...merged, ...remainingSd])
+      // Keep the source returned by the device authoritative.  An ESP32 file
+      // and an old SD file may share a name; matching by name alone falsely
+      // labels the ESP32 file as SD and makes Start choose the wrong path.
+      const espNames = new Set(spiffsFiles.map(file => file.name.toLowerCase()))
+      const remainingSd = sdFiles.filter(file => !espNames.has(file.name.toLowerCase()))
+      setFiles([...spiffsFiles, ...remainingSd])
       setError(null)
     } catch (e) {
       setError('Failed to fetch files')
@@ -42,14 +37,18 @@ export function useFiles() {
     fetchFiles()
   }, [fetchFiles])
 
-  const upload = async (file: File): Promise<string | null> => {
+  const upload = async (file: File): Promise<UploadResult | null> => {
     setUploading(true)
     setUploadProgress(0)
     try {
       const response = await api.uploadFile(file)
       if (response?.success === false) throw new Error(response.error || 'Upload failed')
       await fetchFiles()
-      return response?.filename || file.name
+      return {
+        filename: response?.filename || file.name,
+        onPrinterSd: Boolean(response?.on_printer_sd),
+        warning: response?.warning
+      }
     } catch (e) {
       setError('Upload failed')
       return null
@@ -61,7 +60,8 @@ export function useFiles() {
 
   const deleteFile = async (name: string, onPrinterSd = false) => {
     try {
-      await api.deleteFile(name, onPrinterSd)
+      const response = await api.deleteFile(name, onPrinterSd)
+      if (response?.success === false) throw new Error(response.error || 'Delete failed')
       await fetchFiles()
       return true
     } catch (e) {
@@ -72,7 +72,8 @@ export function useFiles() {
 
   const copyToPrinter = async (name: string) => {
     try {
-      await api.copyToPrinter(name)
+      const response = await api.copyToPrinter(name)
+      if (response?.success === false) throw new Error(response.error || 'Copy failed')
       await fetchFiles()
       return true
     } catch (e) {

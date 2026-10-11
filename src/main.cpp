@@ -38,6 +38,9 @@ uint32_t g_lines_sent = 0;
 uint32_t g_last_status_req = 0;
 volatile uint32_t g_printer_ok_counter = 0;
 volatile uint32_t g_printer_error_counter = 0;
+volatile bool g_sd_uploading = false;
+String g_last_printer_line = "";
+volatile uint32_t g_printer_line_counter = 0;
 
 PrinterStatus printer_status;
 
@@ -59,6 +62,8 @@ void on_usb_data(const EspUsbHostSerialData& data) {
     if (line.length() == 0) continue;
     
     Serial0.printf("USB RX: %s\n", line.c_str());
+    g_last_printer_line = line;
+    g_printer_line_counter++;
     
     // Use the new ResponseParser
     g_response_parser.parse_line(line);
@@ -452,7 +457,7 @@ void loop() {
   
   // Process command scheduler
   PrinterCommand cmd;
-  if (g_command_scheduler.get_next_ready_command(cmd)) {
+  if (!g_sd_uploading && g_command_scheduler.get_next_ready_command(cmd)) {
     send_gcode(cmd.command);
   }
   
@@ -464,7 +469,7 @@ void loop() {
   // Do not inject periodic M105/M114/M27 commands into an active streamed
   // print.  Their acknowledgements are indistinguishable from print-line
   // acknowledgements and can corrupt the streamer's flow control.
-  if (!g_streaming && !printer_status.sd_printing && g_usb_connected &&
+  if (!g_streaming && !printer_status.sd_printing && !g_sd_uploading && g_usb_connected &&
       g_cdc_serial && g_cdc_serial->connected() && millis() - last_status > 2000) {
     if (g_cdc_serial && g_cdc_serial->connected()) {
       g_cdc_serial->println("M105");

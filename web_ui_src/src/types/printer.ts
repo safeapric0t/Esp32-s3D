@@ -77,6 +77,14 @@ export interface ApiResponse {
   success: boolean
   message?: string
   filename?: string
+  on_printer_sd?: boolean
+  warning?: string
   error?: string
   data?: any
+}
+
+export interface UploadResult {
+  filename: string
+  onPrinterSd: boolean
+  warning?: string
 }

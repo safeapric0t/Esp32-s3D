@@ -20,6 +20,9 @@ extern uint32_t g_lines_sent;
 extern String g_current_file;
 extern volatile uint32_t g_printer_ok_counter;
 extern volatile uint32_t g_printer_error_counter;
+extern volatile bool g_sd_uploading;
+extern String g_last_printer_line;
+extern volatile uint32_t g_printer_line_counter;
 
 AsyncWebServer g_server(80);
 AsyncWebSocket g_ws("/ws");
@@ -129,6 +132,23 @@ static bool wait_for_printer_ack(uint32_t ok_before, uint32_t error_before, uint
     return false;
 }
 
+static bool wait_for_printer_text(uint32_t line_before, const char* first, const char* second, const char* third, uint32_t timeout_ms) {
+    uint32_t started = millis();
+    while (millis() - started < timeout_ms) {
+        if (g_printer_line_counter != line_before) {
+            String line = g_last_printer_line;
+            if ((first && line.indexOf(first) >= 0) ||
+                (second && line.indexOf(second) >= 0) ||
+                (third && line.indexOf(third) >= 0)) {
+                return true;
+            }
+            line_before = g_printer_line_counter;
+        }
+        delay(10);
+    }
+    return false;
+}
+
 static void refresh_printer_sd_list() {
     if (!g_cdc_serial || !g_cdc_serial->connected()) return;
     g_cdc_serial->println("M21");
@@ -145,11 +165,14 @@ static bool copy_spiffs_file_to_printer_sd(const String& source_name, const Stri
     File source = SPIFFS.open(gcode_storage_path(source_name), "r");
     if (!source) return false;
 
-    uint32_t ok_before = g_printer_ok_counter;
-    uint32_t error_before = g_printer_error_counter;
+    g_sd_uploading = true;
+    uint32_t line_before = g_printer_line_counter;
     g_cdc_serial->println("M28 " + printer_name);
-    if (!wait_for_printer_ack(ok_before, error_before, 2000)) {
+    // Never send file bytes merely because an unrelated M105/M114 returned
+    // "ok". Marlin must explicitly confirm that M28 opened the file.
+    if (!wait_for_printer_text(line_before, "Writing to file", "File opened", "SD write", 2500)) {
         source.close();
+        g_sd_uploading = false;
         return false;
     }
 
@@ -171,17 +194,21 @@ static bool copy_spiffs_file_to_printer_sd(const String& source_name, const Stri
     source.close();
     if (!write_ok) {
         g_cdc_serial->println("M29");
+        g_sd_uploading = false;
         return false;
     }
 
     delay(250);
-    ok_before = g_printer_ok_counter;
-    error_before = g_printer_error_counter;
+    line_before = g_printer_line_counter;
     g_cdc_serial->println("M29");
-    bool closed_ok = wait_for_printer_ack(ok_before, error_before, 3000);
-    if (!closed_ok) return false;
+    bool closed_ok = wait_for_printer_text(line_before, "Done saving file", "File saved", "ok", 4000);
+    if (!closed_ok) {
+        g_sd_uploading = false;
+        return false;
+    }
 
     refresh_printer_sd_list();
+    g_sd_uploading = false;
     return true;
 }
 
@@ -482,6 +509,20 @@ void handle_files(AsyncWebServerRequest* request) {
     request->send(200, "application/json", json);
 }
 
+void handle_download(AsyncWebServerRequest* request) {
+    if (!request->hasParam("name")) {
+        request->send(400, "application/json", "{\"success\":false,\"error\":\"No file parameter\"}");
+        return;
+    }
+    String name = sanitize_gcode_filename(request->getParam("name")->value());
+    String path = gcode_storage_path(name);
+    if (!SPIFFS.exists(path)) {
+        request->send(404, "application/json", "{\"success\":false,\"error\":\"File not found\"}");
+        return;
+    }
+    request->send(SPIFFS, path, "application/octet-stream", true);
+}
+
 void handle_upload(AsyncWebServerRequest* request, String filename, size_t index, uint8_t* data, size_t len, bool final) {
     if (index == 0) {
         g_upload_success = false;
@@ -748,6 +789,9 @@ void web_server_init() {
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    // The UI is updated together with firmware/SPIFFS.  Prevent the browser
+    // from keeping an older app.js after a refresh.
+    DefaultHeaders::Instance().addHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     
     g_ws.onEvent(on_ws_event);
     g_server.addHandler(&g_ws);
@@ -759,6 +803,10 @@ void web_server_init() {
     
     // API Routes
     g_server.on("/api/status", HTTP_GET, handle_status);
+    // Register the more specific download route before /api/files.  The
+    // AsyncWebServer matcher otherwise lets the shorter /api/files route
+    // answer the download request with the JSON file list.
+    g_server.on("/api/files/download", HTTP_GET, handle_download);
     g_server.on("/api/files", HTTP_GET, handle_files);
     g_server.on("/api/files/upload", HTTP_POST, [](AsyncWebServerRequest* request) {
         if (g_upload_success) {
