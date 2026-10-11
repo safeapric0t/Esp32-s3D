@@ -211,7 +211,7 @@ export function MonitorPanel({ status, progress, connected, onPrintStart }: Moni
             </div>
 
             {/* Chamber (if available) */}
-            {status.chamber.target > 0 && (
+            {status.chamber?.target > 0 && (
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
                   <span className="text-secondary text-sm">Chamber</span>

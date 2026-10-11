@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import React from 'react'
 
 export function SettingsPanel() {
-  const [settings, setSettings] = useState({
+  const [settings, setSettings] = React.useState({
     printerName: 'Ender 3 S1',
     apiKey: 'changeme123',
     wifiMode: 'ap',
@@ -13,7 +13,7 @@ export function SettingsPanel() {
     statusInterval: 2000,
   })
 
-  const [saved, setSaved] = useState(false)
+  const [saved, setSaved] = React.useState(false)
 
   const handleSave = () => {
     // In real implementation, send to API

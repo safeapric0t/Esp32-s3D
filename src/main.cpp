@@ -7,16 +7,32 @@
 #include "gcode_streamer.h"
 #include "printer_manager.h"
 
+// Optional local-only configuration.  This file is ignored by Git so a
+// developer can keep station-mode credentials out of the public repository.
+#if __has_include("local_config.h")
+#include "local_config.h"
+#endif
+
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
-const char* WIFI_SSID = "TURKNET_B907B";
-const char* WIFI_PASSWORD = "TYkyRDkN";
+// Set these values for station mode, or leave AP_MODE enabled for a
+// standalone setup network.  Do not commit real Wi-Fi credentials.
+#ifndef LOCAL_WIFI_SSID
+#define LOCAL_WIFI_SSID "YOUR_WIFI_SSID"
+#endif
+#ifndef LOCAL_WIFI_PASSWORD
+#define LOCAL_WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#endif
+#ifndef LOCAL_AP_MODE
+#define LOCAL_AP_MODE true
+#endif
+
+const char* WIFI_SSID = LOCAL_WIFI_SSID;
+const char* WIFI_PASSWORD = LOCAL_WIFI_PASSWORD;
 const char* AP_SSID = "Ender3-Controller";
 const char* AP_PASSWORD = "ender3controller";
-const bool AP_MODE = false;
-
-const char* API_KEY = "ender3s1secure2024";
+const bool AP_MODE = LOCAL_AP_MODE;
 
 // ============================================================================
 // USB
@@ -36,6 +52,11 @@ uint32_t g_file_size = 0;
 uint32_t g_file_pos = 0;
 uint32_t g_lines_sent = 0;
 uint32_t g_last_status_req = 0;
+volatile uint32_t g_printer_ok_counter = 0;
+volatile uint32_t g_printer_error_counter = 0;
+volatile bool g_sd_uploading = false;
+String g_last_printer_line = "";
+volatile uint32_t g_printer_line_counter = 0;
 
 PrinterStatus printer_status;
 
@@ -57,6 +78,8 @@ void on_usb_data(const EspUsbHostSerialData& data) {
     if (line.length() == 0) continue;
     
     Serial0.printf("USB RX: %s\n", line.c_str());
+    g_last_printer_line = line;
+    g_printer_line_counter++;
     
     // Use the new ResponseParser
     g_response_parser.parse_line(line);
@@ -73,11 +96,17 @@ void on_usb_connected(const EspUsbHostDeviceInfo& info) {
   Serial0.printf("  Serial: %s\n", info.serial);
   g_usb_connected = true;
   printer_status.usb_connected = true;
+  printer_status.sd_inserted = false;
+  printer_status.sd_files.clear();
+  g_usb_rx_buffer = "";
   g_printer_manager.set_usb_status(true);
   broadcast_status(nullptr);
   
   delay(1000);
   if (g_cdc_serial && g_cdc_serial->connected()) {
+    g_cdc_serial->println("M21");
+    delay(250);
+    g_cdc_serial->println("M20");
     g_cdc_serial->println("M105");
     g_cdc_serial->println("M114");
   }
@@ -87,8 +116,12 @@ void on_usb_disconnected(const EspUsbHostDeviceInfo& info) {
   Serial0.println("USB device DISCONNECTED");
   g_usb_connected = false;
   printer_status.usb_connected = false;
+  printer_status.sd_inserted = false;
+  printer_status.sd_files.clear();
+  g_usb_rx_buffer = "";
   g_printer_manager.set_usb_status(false);
   broadcast_status(nullptr);
+  broadcast_file_list();
   
   if (g_streaming) {
     g_streaming = false;
@@ -109,14 +142,22 @@ bool send_gcode(const String& cmd) {
   return true;
 }
 
-void start_stream_print(const String& filename) {
-  if (g_streaming) return;
+bool start_stream_print(const String& filename) {
+  if (g_streaming || printer_status.sd_printing ||
+      !g_usb_connected || !g_cdc_serial || !g_cdc_serial->connected()) return false;
   
-  String path = "/gcode/" + filename;
+  // SPIFFS has a short path limit; the upload handler stores files with this
+  // same reserved prefix and truncates only the base name while preserving
+  // the G-code extension.
+  String path = "/gcode_" + filename;
+  if (!SPIFFS.exists(path)) {
+    Serial0.printf("G-code file does not exist: %s\n", path.c_str());
+    return false;
+  }
   g_print_file = SPIFFS.open(path, "r");
   if (!g_print_file) {
     Serial0.printf("Failed to open: %s\n", path.c_str());
-    return;
+    return false;
   }
   
   g_file_size = g_print_file.size();
@@ -140,10 +181,33 @@ void start_stream_print(const String& filename) {
   g_gcode_streamer.begin(g_print_file, config);
   g_gcode_streamer.set_callbacks(
     [](const StreamStats& stats) {
-      uint32_t total = stats.total_lines > 0 ? stats.total_lines : 1;
-      g_printer_manager.set_progress(stats.sent_lines * 100 / total, "Printing...");
+      uint32_t percent = 0;
+      if (stats.total_lines > 0) {
+        percent = stats.acked_lines * 100 / stats.total_lines;
+      } else if (g_file_size > 0 && g_print_file) {
+        percent = static_cast<uint32_t>(g_print_file.position() * 100 / g_file_size);
+      }
+      printer_status.progress.progress = percent;
+      printer_status.progress.file_pos = g_print_file ? g_print_file.position() : printer_status.progress.file_pos;
+      printer_status.progress.time_elapsed = (millis() - stats.start_time) / 1000;
+      g_printer_manager.set_progress(percent, "Printing...");
+      static uint32_t last_broadcast = 0;
+      if (millis() - last_broadcast >= 250 || percent >= 100) {
+        last_broadcast = millis();
+        broadcast_progress();
+      }
     },
     [](bool success, const String& message) {
+      g_streaming = false;
+      g_paused = false;
+      if (g_print_file) g_print_file.close();
+      printer_status.state = success ? PRINTER_STATE_IDLE : PRINTER_STATE_ERROR;
+      if (success) {
+        printer_status.progress.progress = 100;
+        printer_status.progress.file_pos = printer_status.progress.file_size;
+      }
+      broadcast_status(nullptr);
+      broadcast_progress();
       if (success) {
         g_printer_manager.print_complete(true, message);
       } else {
@@ -157,6 +221,7 @@ void start_stream_print(const String& filename) {
   
   broadcast_status(nullptr);
   broadcast_progress();
+  return true;
 }
 
 void stop_stream_print() {
@@ -176,9 +241,10 @@ void handle_streaming() {
   g_gcode_streamer.handle_streaming();
 }
 
-void start_sd_print(const String& filename) {
-  send_gcode("M23 " + filename);
-  send_gcode("M24");
+bool start_sd_print(const String& filename) {
+  if (!g_usb_connected || !g_cdc_serial || !g_cdc_serial->connected()) return false;
+  if (!send_gcode("M23 " + filename)) return false;
+  if (!send_gcode("M24")) return false;
   printer_status.state = PRINTER_STATE_PRINTING;
   printer_status.progress.filename = filename;
   printer_status.progress.progress = 0;
@@ -187,6 +253,7 @@ void start_sd_print(const String& filename) {
   printer_status.sd_printing = true;
   broadcast_status(nullptr);
   broadcast_progress();
+  return true;
 }
 
 void stop_sd_print() {
@@ -217,11 +284,20 @@ void resume_print() {
 }
 
 void cancel_print() {
-  send_gcode("M112");
-  delay(500);
-  send_gcode("M999");
-  stop_stream_print();
-  
+  // Normal cancel must not use M112: Marlin treats M112 as an emergency
+  // shutdown and some Ender boards require a physical reset afterwards.
+  bool was_sd_print = printer_status.sd_printing;
+  if (was_sd_print) {
+    send_gcode("M524"); // Abort SD print without entering kill state.
+  } else if (g_streaming) {
+    send_gcode("M410"); // Quick-stop queued motion for streamed prints.
+  }
+  send_gcode("M104 S0");
+  send_gcode("M140 S0");
+  send_gcode("M106 S0");
+
+  if (was_sd_print) stop_sd_print();
+  else stop_stream_print();
   g_gcode_streamer.cancel();
 }
 
@@ -237,7 +313,8 @@ void setup() {
     Serial0.println("SPIFFS mount failed!");
   } else {
     Serial0.println("SPIFFS mounted");
-    SPIFFS.mkdir("/gcode");
+    // G-code files are stored with a /gcode_ prefix because SPIFFS does not
+    // reliably preserve/create nested directories after uploadfs.
   }
   
   g_usb_host = new EspUsbHost();
@@ -307,9 +384,13 @@ void setup() {
   // Setup response parser callback
   g_response_parser.set_callback([](const String& type, const String& data) {
     if (type == "ok") {
+      g_printer_ok_counter++;
       g_gcode_streamer.handle_ack("ok");
       g_command_scheduler.mark_ack_received(0, "ok"); // simplified
+    } else if (type == "busy") {
+      g_gcode_streamer.handle_ack("busy");
     } else if (type == "error") {
+      g_printer_error_counter++;
       g_gcode_streamer.handle_ack("Error");
       g_command_scheduler.mark_error(0, data);
     } else if (type == "temperature") {
@@ -354,11 +435,17 @@ void setup() {
         printer_status.progress.progress = (total > 0) ? (cur * 100.0f / total) : 0;
       }
     } else if (type == "file_list_begin") {
+      printer_status.sd_inserted = true;
       printer_status.sd_files.clear();
+      broadcast_status(nullptr);
     } else if (type == "file_list_end") {
       broadcast_file_list();
+      broadcast_status(nullptr);
     } else if (type == "file_list_entry") {
       printer_status.sd_files.push_back(data);
+    } else if (type == "sd_inserted") {
+      printer_status.sd_inserted = (data == "1");
+      broadcast_status(nullptr);
     } else if (type == "error") {
       Serial0.printf("Printer error: %s\n", data.c_str());
     }
@@ -367,9 +454,20 @@ void setup() {
   // Initialize printer manager
   g_printer_manager.begin();
   
-  printer_status.state = PRINTER_STATE_DISCONNECTED;
+  // USB can enumerate while Wi-Fi is still connecting.  In that case the
+  // initial M21/M20 replies happened before the parser callback existed, so
+  // request a fresh snapshot after all callbacks are installed.
+  printer_status.state = g_usb_connected ? PRINTER_STATE_IDLE : PRINTER_STATE_DISCONNECTED;
   printer_status.firmware_version = "";
   printer_status.printer_model = "Ender 3 S1";
+
+  if (g_usb_connected && g_cdc_serial && g_cdc_serial->connected()) {
+    g_cdc_serial->println("M21");
+    delay(250);
+    g_cdc_serial->println("M20");
+    g_cdc_serial->println("M105");
+    g_cdc_serial->println("M114");
+  }
 }
 
 void loop() {
@@ -380,12 +478,12 @@ void loop() {
   handle_streaming();
   handle_sd_print_progress();
   
-  // Handle G-code streaming
-  g_gcode_streamer.handle_streaming();
-  
   // Process command scheduler
   PrinterCommand cmd;
-  if (g_command_scheduler.get_next_ready_command(cmd)) {
+  // A queued manual/status command must never be interleaved with streamed
+  // G-code; its acknowledgement could otherwise be mistaken for a print-line
+  // acknowledgement and desynchronise the stream.
+  if (!g_streaming && !g_sd_uploading && g_command_scheduler.get_next_ready_command(cmd)) {
     send_gcode(cmd.command);
   }
   
@@ -394,7 +492,11 @@ void loop() {
   
   // Periodic status requests
   static uint32_t last_status = 0;
-  if (g_usb_connected && g_cdc_serial && g_cdc_serial->connected() && millis() - last_status > 2000) {
+  // Do not inject periodic M105/M114/M27 commands into an active streamed
+  // print.  Their acknowledgements are indistinguishable from print-line
+  // acknowledgements and can corrupt the streamer's flow control.
+  if (!g_streaming && !printer_status.sd_printing && !g_sd_uploading && g_usb_connected &&
+      g_cdc_serial && g_cdc_serial->connected() && millis() - last_status > 2000) {
     if (g_cdc_serial && g_cdc_serial->connected()) {
       g_cdc_serial->println("M105");
     }
@@ -402,6 +504,7 @@ void loop() {
     if (++pos_ctr >= 5) {
       if (g_cdc_serial && g_cdc_serial->connected()) {
         g_cdc_serial->println("M114");
+        g_cdc_serial->println("M27");
       }
       pos_ctr = 0;
     }

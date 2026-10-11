@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react'
+import React from 'react'
 
 interface UseResizablePanelsOptions {
   direction: 'horizontal' | 'vertical'
@@ -15,15 +15,15 @@ export function useResizablePanels({
   defaultSizes = [],
   onChange
 }: UseResizablePanelsOptions) {
-  const [sizes, setSizes] = useState<number[]>(() => {
+  const [sizes, setSizes] = React.useState<number[]>(() => {
     if (defaultSizes.length > 0) return defaultSizes
     return direction === 'horizontal' ? [50, 50] : [50, 50]
   })
-  const [draggingIndex, setDraggingIndex] = useState<number | null>(null)
-  const startPosRef = useRef<number>(0)
-  const startSizesRef = useRef<number[]>([])
+  const [draggingIndex, setDraggingIndex] = React.useState<number | null>(null)
+  const startPosRef = React.useRef<number>(0)
+  const startSizesRef = React.useRef<number[]>([])
 
-  const handleMouseDown = useCallback((index: number, e: React.MouseEvent) => {
+  const handleMouseDown = React.useCallback((index: number, e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
     setDraggingIndex(index)
@@ -34,7 +34,7 @@ export function useResizablePanels({
     document.body.style.userSelect = 'none'
   }, [direction, sizes])
 
-  const handleMouseMove = useCallback((e: MouseEvent) => {
+  const handleMouseMove = React.useCallback((e: MouseEvent) => {
     if (draggingIndex === null) return
     
     const currentPos = direction === 'horizontal' ? e.clientX : e.clientY
@@ -55,13 +55,13 @@ export function useResizablePanels({
     onChange?.(newSizes)
   }, [draggingIndex, direction, minSize, maxSize, onChange])
 
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = React.useCallback(() => {
     setDraggingIndex(null)
     document.body.style.cursor = ''
     document.body.style.userSelect = ''
   }, [])
 
-  useEffect(() => {
+  React.useEffect(() => {
     document.addEventListener('mousemove', handleMouseMove)
     document.addEventListener('mouseup', handleMouseUp)
     return () => {
@@ -79,27 +79,27 @@ export function useResizablePanels({
 }
 
 export function usePanelLayout() {
-  const [panelStates, setPanelStates] = useState<Record<string, {
+  const [panelStates, setPanelStates] = React.useState<Record<string, {
     collapsed: boolean
     minimized: boolean
     size?: { width: number; height: number }
   }>>({})
 
-  const toggleCollapse = useCallback((panelId: string) => {
+  const toggleCollapse = React.useCallback((panelId: string) => {
     setPanelStates(prev => ({
       ...prev,
       [panelId]: { ...prev[panelId], collapsed: !prev[panelId]?.collapsed }
     }))
   }, [])
 
-  const toggleMinimize = useCallback((panelId: string) => {
+  const toggleMinimize = React.useCallback((panelId: string) => {
     setPanelStates(prev => ({
       ...prev,
       [panelId]: { ...prev[panelId], minimized: !prev[panelId]?.minimized }
     }))
   }, [])
 
-  const setPanelSize = useCallback((panelId: string, size: { width: number; height: number }) => {
+  const setPanelSize = React.useCallback((panelId: string, size: { width: number; height: number }) => {
     setPanelStates(prev => ({
       ...prev,
       [panelId]: { ...prev[panelId], size }

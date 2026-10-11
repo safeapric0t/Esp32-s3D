@@ -6,25 +6,28 @@ extern EspUsbHostCdcSerial* g_cdc_serial;
 GcodeStreamer g_gcode_streamer;
 
 void GcodeStreamer::begin(File& file, const StreamConfig& config) {
-    if (state != StreamState::IDLE) return;
+    // A completed/cancelled stream can be reused for the next job.  Only an
+    // actively running or preparing stream must reject a new start.
+    if (state == StreamState::PREPARING || state == StreamState::STREAMING ||
+        state == StreamState::PAUSED) return;
     
     file_handle = file;
     config_ = config;
+    in_flight.clear();
+    current_line = 0;
+    end_of_file = false;
     state = StreamState::PREPARING;
     
     file_handle.seek(0);
-    total_lines = 0;
-    while (file_handle.available()) {
-        String line = file_handle.readStringUntil('\n');
-        if (line.length() > 0 && !line.startsWith(";")) {
-            total_lines++;
-        }
-    }
-    file_handle.seek(0);
-    
+    // Do not scan the complete file here.  begin() is called from the
+    // AsyncWebServer request callback, and a large G-code file can block that
+    // task long enough to trigger the ESP task watchdog.  The main loop sends
+    // a few lines at a time and reaches EOF incrementally instead.
     stats = StreamStats();
-    stats.total_lines = count_total_lines();
+    total_lines = 0;
+    stats.total_lines = 0;
     stats.start_time = millis();
+    stats.last_ack_time = stats.start_time;
     
     file_handle.seek(0);
     state = StreamState::STREAMING;
@@ -46,9 +49,15 @@ void GcodeStreamer::handle_streaming() {
     while (in_flight_count() < config_.max_in_flight && state == StreamState::STREAMING) {
         if (!send_next_line()) {
             if (in_flight_count() == 0) {
-                state = StreamState::COMPLETED;
-                if (completion_cb_) completion_cb_(true, "Print completed");
-                if (progress_cb_) progress_cb_(stats);
+                if (end_of_file) {
+                    bool success = stats.sent_lines > 0;
+                    state = success ? StreamState::COMPLETED : StreamState::ERROR;
+                    if (completion_cb_) {
+                        completion_cb_(success, success ? "Print completed" :
+                                       "G-code file has no executable lines");
+                    }
+                    if (progress_cb_) progress_cb_(stats);
+                }
             }
             break;
         }
@@ -61,12 +70,22 @@ void GcodeStreamer::handle_streaming() {
 }
 
 void GcodeStreamer::handle_ack(const String& response) {
+    // Marlin emits this while M190/M109/G4 and some motion commands are
+    // still being processed.  It is not an acknowledgement, but it proves
+    // the printer is alive and must extend the wait window instead of causing
+    // the same command to be retried and queued repeatedly.
+    if (response.startsWith("busy") || response.startsWith("echo:busy:")) {
+        stats.last_ack_time = millis();
+        return;
+    }
+
     if (in_flight.empty()) return;
     
     for (auto it = in_flight.begin(); it != in_flight.end(); ) {
         if (response.startsWith("ok") || response.startsWith("OK")) {
             stats.acked_lines++;
             stats.last_ack_time = millis();
+            stats.retry_count = 0;
             it = in_flight.erase(it);
             break;
         } else if (response.startsWith("Error:") || response.startsWith("error:") || 
@@ -102,21 +121,11 @@ StreamState GcodeStreamer::get_state() const { return state; }
 const StreamStats& GcodeStreamer::get_stats() const { return stats; }
 bool GcodeStreamer::is_active() const { return state == StreamState::STREAMING || state == StreamState::PAUSED; }
 
-uint32_t GcodeStreamer::count_total_lines() {
-    uint32_t count = 0;
-    file_handle.seek(0);
-    while (file_handle.available()) {
-        String line = file_handle.readStringUntil('\n');
-        if (line.length() > 0 && !line.startsWith(";")) {
-            count++;
-        }
-    }
-    file_handle.seek(0);
-    return count;
-}
-
 bool GcodeStreamer::send_next_line() {
-    if (current_line >= total_lines) return false;
+    if (end_of_file || !file_handle || !file_handle.available()) {
+        end_of_file = true;
+        return false;
+    }
     
     String line;
     while (file_handle.available()) {
@@ -129,9 +138,8 @@ bool GcodeStreamer::send_next_line() {
     }
     
     if (line.length() == 0) {
-        current_line++;
-        if (current_line >= total_lines) return false;
-        return send_next_line();
+        end_of_file = true;
+        return false;
     }
     
     if (g_cdc_serial && g_cdc_serial->connected()) {

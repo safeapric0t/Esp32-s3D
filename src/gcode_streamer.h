@@ -59,13 +59,13 @@ private:
     std::vector<String> in_flight;
     size_t current_line = 0;
     File file_handle;
+    bool end_of_file = false;
 
     std::function<void(const StreamStats&)> progress_cb_;
     std::function<void(bool, const String&)> completion_cb_;
 
     StreamState state = StreamState::IDLE;
 
-    uint32_t count_total_lines();
     bool send_next_line();
     uint8_t in_flight_count() const;
     void check_timeouts();

@@ -1,18 +1,29 @@
-import { useState, useEffect, useCallback } from 'react'
-import { FileInfo } from '../types/printer'
+import React, { useEffect, useCallback } from 'react'
+import { FileInfo, UploadResult } from '../types/printer'
 import { api } from '../services/api'
 
 export function useFiles() {
-  const [files, setFiles] = useState<FileInfo[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [uploading, setUploading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState(0)
+  const [files, setFiles] = React.useState<FileInfo[]>([])
+  const [loading, setLoading] = React.useState(true)
+  const [error, setError] = React.useState<string | null>(null)
+  const [uploading, setUploading] = React.useState(false)
+  const [uploadProgress, setUploadProgress] = React.useState(0)
 
-  const fetchFiles = useCallback(async () => {
+  const fetchFiles = React.useCallback(async () => {
     try {
-      const data = await api.getFiles()
-      setFiles(data)
+      const [rawSpiffsFiles, rawSdFiles] = await Promise.all([
+        api.getFiles(),
+        api.getSdFiles().catch(() => [])
+      ])
+      const spiffsFiles = Array.isArray(rawSpiffsFiles) ? rawSpiffsFiles : []
+      const sdFiles = Array.isArray(rawSdFiles) ? rawSdFiles : []
+
+      // Keep the source returned by the device authoritative.  An ESP32 file
+      // and an old SD file may share a name; matching by name alone falsely
+      // labels the ESP32 file as SD and makes Start choose the wrong path.
+      const espNames = new Set(spiffsFiles.map(file => file.name.toLowerCase()))
+      const remainingSd = sdFiles.filter(file => !espNames.has(file.name.toLowerCase()))
+      setFiles([...spiffsFiles, ...remainingSd])
       setError(null)
     } catch (e) {
       setError('Failed to fetch files')
@@ -22,20 +33,25 @@ export function useFiles() {
     }
   }, [])
 
-  useEffect(() => {
+  React.useEffect(() => {
     fetchFiles()
   }, [fetchFiles])
 
-  const upload = async (file: File) => {
+  const upload = async (file: File): Promise<UploadResult | null> => {
     setUploading(true)
     setUploadProgress(0)
     try {
-      await api.uploadFile(file)
+      const response = await api.uploadFile(file)
+      if (response?.success === false) throw new Error(response.error || 'Upload failed')
       await fetchFiles()
-      return true
+      return {
+        filename: response?.filename || file.name,
+        onPrinterSd: Boolean(response?.on_printer_sd),
+        warning: response?.warning
+      }
     } catch (e) {
       setError('Upload failed')
-      return false
+      return null
     } finally {
       setUploading(false)
       setUploadProgress(0)
@@ -44,7 +60,8 @@ export function useFiles() {
 
   const deleteFile = async (name: string, onPrinterSd = false) => {
     try {
-      await api.deleteFile(name, onPrinterSd)
+      const response = await api.deleteFile(name, onPrinterSd)
+      if (response?.success === false) throw new Error(response.error || 'Delete failed')
       await fetchFiles()
       return true
     } catch (e) {
@@ -55,7 +72,9 @@ export function useFiles() {
 
   const copyToPrinter = async (name: string) => {
     try {
-      await api.copyToPrinter(name)
+      const response = await api.copyToPrinter(name)
+      if (response?.success === false) throw new Error(response.error || 'Copy failed')
+      await fetchFiles()
       return true
     } catch (e) {
       setError('Copy to printer failed')

@@ -35,7 +35,14 @@ main/web_ui_embed/
 # Environment
 .env
 .env.local
+include/local_config.h
 
 # Temporary files
 *.tmp
 *.temp
+
+# User/printer artifacts (never commit personal G-code or backups)
+*.gcode
+*.gco
+*.g
+*backup*

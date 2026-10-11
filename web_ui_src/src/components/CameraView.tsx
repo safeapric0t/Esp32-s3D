@@ -1,6 +1,8 @@
+import React from 'react'
+
 export function CameraView() {
-  const [streaming, setStreaming] = useState(false)
-  const [snapshot, setSnapshot] = useState<string | null>(null)
+  const [streaming, setStreaming] = React.useState(false)
+  const [snapshot, setSnapshot] = React.useState<string | null>(null)
 
   return (
     <div className="flex-1 flex flex-col" style={{ minHeight: 0 }}>
