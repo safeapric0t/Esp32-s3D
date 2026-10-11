@@ -179,26 +179,20 @@ bool start_stream_print(const String& filename) {
   config.max_retries = 3;
   
   g_gcode_streamer.begin(g_print_file, config);
-  // Do not report a successful print when the file contains no readable
-  // executable G-code lines.  This used to make a corrupt/empty upload look
-  // like a completed print without sending anything to Marlin.
-  if (g_gcode_streamer.get_stats().total_lines == 0) {
-    g_print_file.close();
-    g_streaming = false;
-    printer_status.state = PRINTER_STATE_ERROR;
-    Serial0.printf("G-code file has no executable lines: %s\n", filename.c_str());
-    return false;
-  }
   g_gcode_streamer.set_callbacks(
     [](const StreamStats& stats) {
-      uint32_t total = stats.total_lines > 0 ? stats.total_lines : 1;
-      uint32_t percent = stats.acked_lines * 100 / total;
+      uint32_t percent = 0;
+      if (stats.total_lines > 0) {
+        percent = stats.acked_lines * 100 / stats.total_lines;
+      } else if (g_file_size > 0 && g_print_file) {
+        percent = static_cast<uint32_t>(g_print_file.position() * 100 / g_file_size);
+      }
       printer_status.progress.progress = percent;
       printer_status.progress.file_pos = g_print_file ? g_print_file.position() : printer_status.progress.file_pos;
       printer_status.progress.time_elapsed = (millis() - stats.start_time) / 1000;
       g_printer_manager.set_progress(percent, "Printing...");
       static uint32_t last_broadcast = 0;
-      if (millis() - last_broadcast >= 250 || stats.acked_lines >= stats.total_lines) {
+      if (millis() - last_broadcast >= 250 || percent >= 100) {
         last_broadcast = millis();
         broadcast_progress();
       }
@@ -393,6 +387,8 @@ void setup() {
       g_printer_ok_counter++;
       g_gcode_streamer.handle_ack("ok");
       g_command_scheduler.mark_ack_received(0, "ok"); // simplified
+    } else if (type == "busy") {
+      g_gcode_streamer.handle_ack("busy");
     } else if (type == "error") {
       g_printer_error_counter++;
       g_gcode_streamer.handle_ack("Error");

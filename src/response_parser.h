@@ -19,6 +19,15 @@ public:
         
         if (line_trimmed.length() == 0) return;
 
+        // Marlin sends periodic busy messages while a long-running command
+        // such as M190, M109, G4 or homing is still executing.  Surface this
+        // separately so the streamer's ACK timeout does not resend the
+        // command while the printer is healthy and working.
+        if (line_trimmed.startsWith("echo:busy:")) {
+            if (callback_) callback_("busy", line_trimmed);
+            return;
+        }
+
         // Error responses
         if (line_trimmed.startsWith("Error:") || line_trimmed.startsWith("error:") || line_trimmed.startsWith("!!")) {
             String error = line_trimmed;
