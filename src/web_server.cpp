@@ -631,12 +631,25 @@ void handle_print_start(AsyncWebServerRequest* request) {
         request->send(503, "application/json", "{\"success\":false,\"error\":\"Printer USB is not connected\"}");
         return;
     }
+    bool file_on_esp32 = SPIFFS.exists(gcode_storage_path(file));
+    bool file_on_printer_sd = printer_sd_contains(file);
+
+    // Treat the storage reported by the device as authoritative.  This also
+    // protects against an old browser bundle sending mode=sd for an ESP32
+    // upload, or mode=stream for a file that only exists on printer SD.
+    if (mode == "sd" && !file_on_printer_sd && file_on_esp32) mode = "stream";
+    if (mode == "stream" && !file_on_esp32 && file_on_printer_sd) mode = "sd";
+
     if (mode == "sd" && !printer_status.sd_inserted) {
         request->send(409, "application/json", "{\"success\":false,\"error\":\"Printer SD card is not detected\"}");
         return;
     }
-    if (mode == "stream" && !SPIFFS.exists(gcode_storage_path(file))) {
+    if (mode == "stream" && !file_on_esp32) {
         request->send(404, "application/json", "{\"success\":false,\"error\":\"G-code file is not stored on ESP32\"}");
+        return;
+    }
+    if (mode == "sd" && !file_on_printer_sd) {
+        request->send(404, "application/json", "{\"success\":false,\"error\":\"G-code file is not present on printer SD\"}");
         return;
     }
 

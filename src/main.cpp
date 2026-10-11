@@ -127,7 +127,8 @@ bool send_gcode(const String& cmd) {
 }
 
 bool start_stream_print(const String& filename) {
-  if (g_streaming || !g_usb_connected || !g_cdc_serial || !g_cdc_serial->connected()) return false;
+  if (g_streaming || printer_status.sd_printing ||
+      !g_usb_connected || !g_cdc_serial || !g_cdc_serial->connected()) return false;
   
   // SPIFFS has a short path limit; the upload handler stores files with this
   // same reserved prefix and truncates only the base name while preserving
@@ -162,6 +163,16 @@ bool start_stream_print(const String& filename) {
   config.max_retries = 3;
   
   g_gcode_streamer.begin(g_print_file, config);
+  // Do not report a successful print when the file contains no readable
+  // executable G-code lines.  This used to make a corrupt/empty upload look
+  // like a completed print without sending anything to Marlin.
+  if (g_gcode_streamer.get_stats().total_lines == 0) {
+    g_print_file.close();
+    g_streaming = false;
+    printer_status.state = PRINTER_STATE_ERROR;
+    Serial0.printf("G-code file has no executable lines: %s\n", filename.c_str());
+    return false;
+  }
   g_gcode_streamer.set_callbacks(
     [](const StreamStats& stats) {
       uint32_t total = stats.total_lines > 0 ? stats.total_lines : 1;
@@ -457,7 +468,10 @@ void loop() {
   
   // Process command scheduler
   PrinterCommand cmd;
-  if (!g_sd_uploading && g_command_scheduler.get_next_ready_command(cmd)) {
+  // A queued manual/status command must never be interleaved with streamed
+  // G-code; its acknowledgement could otherwise be mistaken for a print-line
+  // acknowledgement and desynchronise the stream.
+  if (!g_streaming && !g_sd_uploading && g_command_scheduler.get_next_ready_command(cmd)) {
     send_gcode(cmd.command);
   }
   
