@@ -174,7 +174,9 @@ private:
         }
         if (t_idx >= 0) {
             float cur = 0, tgt = 0;
-            sscanf(line.substring(t_idx + value_offset).c_str(), "%f/%f", &cur, &tgt);
+            // Marlin may emit either "T:200/200" or "T:200 /200".
+            // Whitespace in the format makes both forms parse correctly.
+            sscanf(line.substring(t_idx + value_offset).c_str(), "%f /%f", &cur, &tgt);
             if (callback_) callback_("temperature", String(cur) + "," + String(tgt));
         }
     }
@@ -188,7 +190,7 @@ private:
         }
         if (b_idx >= 0) {
             float cur = 0, tgt = 0;
-            sscanf(line.substring(b_idx + value_offset).c_str(), "%f/%f", &cur, &tgt);
+            sscanf(line.substring(b_idx + value_offset).c_str(), "%f /%f", &cur, &tgt);
             if (callback_) callback_("bed_temperature", String(cur) + "," + String(tgt));
         }
     }
