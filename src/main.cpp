@@ -7,16 +7,32 @@
 #include "gcode_streamer.h"
 #include "printer_manager.h"
 
+// Optional local-only configuration.  This file is ignored by Git so a
+// developer can keep station-mode credentials out of the public repository.
+#if __has_include("local_config.h")
+#include "local_config.h"
+#endif
+
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
 // Set these values for station mode, or leave AP_MODE enabled for a
 // standalone setup network.  Do not commit real Wi-Fi credentials.
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+#ifndef LOCAL_WIFI_SSID
+#define LOCAL_WIFI_SSID "YOUR_WIFI_SSID"
+#endif
+#ifndef LOCAL_WIFI_PASSWORD
+#define LOCAL_WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#endif
+#ifndef LOCAL_AP_MODE
+#define LOCAL_AP_MODE true
+#endif
+
+const char* WIFI_SSID = LOCAL_WIFI_SSID;
+const char* WIFI_PASSWORD = LOCAL_WIFI_PASSWORD;
 const char* AP_SSID = "Ender3-Controller";
 const char* AP_PASSWORD = "ender3controller";
-const bool AP_MODE = true;
+const bool AP_MODE = LOCAL_AP_MODE;
 
 // ============================================================================
 // USB

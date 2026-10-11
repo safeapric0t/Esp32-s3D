@@ -35,6 +35,7 @@ main/web_ui_embed/
 # Environment
 .env
 .env.local
+include/local_config.h
 
 # Temporary files
 *.tmp

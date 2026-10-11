@@ -85,12 +85,12 @@ Password: ender3controller
 Address:  http://192.168.4.1
 ```
 
-Station moduna geçmek için [`src/main.cpp`](src/main.cpp) içindeki şu değerleri kendi ağınıza göre değiştirin:
+Station modunda yerel ayar dosyası kullanmak için `include/local_config.h` dosyasını oluşturun. Bu dosya `.gitignore` içindedir ve Git’e gönderilmez:
 
 ```cpp
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-const bool AP_MODE = false;
+#define LOCAL_WIFI_SSID "YOUR_WIFI_SSID"
+#define LOCAL_WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#define LOCAL_AP_MODE false
 ```
 
 Gerçek Wi-Fi bilgilerini Git’e commit etmeyin.
