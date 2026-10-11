@@ -6,16 +6,22 @@ extern EspUsbHostCdcSerial* g_cdc_serial;
 GcodeStreamer g_gcode_streamer;
 
 void GcodeStreamer::begin(File& file, const StreamConfig& config) {
-    if (state != StreamState::IDLE) return;
+    // A completed/cancelled stream can be reused for the next job.  Only an
+    // actively running or preparing stream must reject a new start.
+    if (state == StreamState::PREPARING || state == StreamState::STREAMING ||
+        state == StreamState::PAUSED) return;
     
     file_handle = file;
     config_ = config;
+    in_flight.clear();
+    current_line = 0;
     state = StreamState::PREPARING;
     
     file_handle.seek(0);
     total_lines = 0;
     while (file_handle.available()) {
         String line = file_handle.readStringUntil('\n');
+        line.trim();
         if (line.length() > 0 && !line.startsWith(";")) {
             total_lines++;
         }
@@ -25,6 +31,7 @@ void GcodeStreamer::begin(File& file, const StreamConfig& config) {
     stats = StreamStats();
     stats.total_lines = count_total_lines();
     stats.start_time = millis();
+    stats.last_ack_time = stats.start_time;
     
     file_handle.seek(0);
     state = StreamState::STREAMING;
@@ -107,6 +114,7 @@ uint32_t GcodeStreamer::count_total_lines() {
     file_handle.seek(0);
     while (file_handle.available()) {
         String line = file_handle.readStringUntil('\n');
+        line.trim();
         if (line.length() > 0 && !line.startsWith(";")) {
             count++;
         }

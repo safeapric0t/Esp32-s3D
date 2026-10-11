@@ -19,12 +19,6 @@ public:
         
         if (line_trimmed.length() == 0) return;
 
-        // OK response
-        if (line_trimmed.startsWith("ok") || line_trimmed.startsWith("OK")) {
-            if (callback_) callback_("ok", "");
-            return;
-        }
-
         // Error responses
         if (line_trimmed.startsWith("Error:") || line_trimmed.startsWith("error:") || line_trimmed.startsWith("!!")) {
             String error = line_trimmed;
@@ -36,37 +30,39 @@ public:
             return;
         }
 
-        // Temperature responses
-        if (line.startsWith("T:") || line.startsWith("T0:") || line.startsWith("T1:")) {
+        // Marlin commonly prefixes reports with "ok ": parse payloads before
+        // handling the acknowledgement so data is not discarded.
+        if (line.indexOf("T:") >= 0 || line.indexOf("T0:") >= 0 || line.indexOf("T1:") >= 0) {
             parse_temperature(line);
-            return;
         }
 
-        if (line.startsWith("B:") || line.startsWith("B0:")) {
+        if (line.indexOf("B:") >= 0 || line.indexOf("B0:") >= 0) {
             parse_bed_temperature(line);
-            return;
         }
 
         // Position response
-        if (line.startsWith("X:") && line.indexOf("Y:") > 0 && line.indexOf("Z:") > 0) {
+        if (line.indexOf("X:") >= 0 && line.indexOf("Y:") >= 0 && line.indexOf("Z:") >= 0) {
             parse_position(line);
-            return;
         }
 
         // SD printing progress
         if (line.indexOf("SD printing byte") >= 0) {
             parse_sd_progress(line);
-            return;
+            if (callback_) callback_("sd_inserted", "1");
+        }
+
+        if (line.indexOf("SD card ok") >= 0 || line.indexOf("SD card inserted") >= 0) {
+            if (callback_) callback_("sd_inserted", "1");
+        } else if (line.indexOf("No SD card") >= 0 || line.indexOf("SD init fail") >= 0 || line.indexOf("SD card error") >= 0) {
+            if (callback_) callback_("sd_inserted", "0");
         }
 
         // M20 file list
         if (line.startsWith("Begin file list") || line.startsWith("Begin file list:")) {
             if (callback_) callback_("file_list_begin", "");
-            return;
         }
         if (line.startsWith("End file list") || line.startsWith("End file list:")) {
             if (callback_) callback_("file_list_end", "");
-            return;
         }
 
         // M20 file list entries
@@ -91,46 +87,36 @@ public:
             String cleanLine = line;
             cleanLine.trim();
             
-            // Check if it looks like a filename (has extension or is a simple name)
-            bool isFile = false;
-            if (cleanLine.endsWith(".gcode") || cleanLine.endsWith(".g") || cleanLine.endsWith(".gco") ||
-                cleanLine.endsWith(".GCODE") || cleanLine.endsWith(".G") || cleanLine.endsWith(".GCO") ||
-                cleanLine.endsWith(".gco") || cleanLine.endsWith(".GCO")) {
-                isFile = true;
-            }
-            
-            // Also accept lines that look like "filename.gcode 12345" (name + size)
-            if (!isFile) {
-                int spaceIdx = cleanLine.indexOf(' ');
-                if (spaceIdx > 0) {
-                    String namePart = cleanLine.substring(0, spaceIdx);
-                    if (namePart.endsWith(".gcode") || namePart.endsWith(".g") || namePart.endsWith(".gco") ||
-                        namePart.endsWith(".GCODE") || namePart.endsWith(".G") || namePart.endsWith(".GCO")) {
-                        cleanLine = namePart;
-                        isFile = true;
-                    }
-                }
-                
-                if (!isFile && cleanLine.length() > 3) {
-                    bool validChars = true;
-                    for (size_t i = 0; i < cleanLine.length(); i++) {
-                        char c = cleanLine[i];
-                        if (!isalnum(c) && c != '.' && c != '_' && c != '-' && c != '~') {
-                            validChars = false;
-                            break;
-                        }
-                    }
-                    if (validChars && cleanLine.indexOf('.') > 0) {
-                        isFile = true;
-                    }
-                }
-                
-                if (isFile && cleanLine.length() > 0) {
-                    String filename = cleanLine;
-                    filename.trim();
-                    if (callback_) callback_("file_list_entry", filename);
+            // Marlin normally returns "NAME.GCO 12345", but some USB/SD
+            // combinations concatenate the size or the next token.  Keep the
+            // filename through the last recognised G-code extension and drop
+            // everything after it.
+            String upper = cleanLine;
+            upper.toUpperCase();
+            int extension_end = -1;
+            const char* extensions[] = { ".GCODE", ".GCO", ".G" };
+            const int extension_lengths[] = { 6, 4, 2 };
+            for (int i = 0; i < 3; i++) {
+                int pos = upper.lastIndexOf(extensions[i]);
+                if (pos >= 0 && pos + extension_lengths[i] > extension_end) {
+                    extension_end = pos + extension_lengths[i];
                 }
             }
+
+            bool isFile = extension_end > 1;
+            if (isFile) cleanLine = cleanLine.substring(0, extension_end);
+
+            if (isFile && cleanLine.length() > 0) {
+                String filename = cleanLine;
+                filename.trim();
+                if (callback_) callback_("file_list_entry", filename);
+            }
+        }
+
+        // OK response (after extracting any payload on the same line).
+        if (line_trimmed.startsWith("ok") || line_trimmed.startsWith("OK")) {
+            if (callback_) callback_("ok", "");
+            return;
         }
         
         // Power reports
@@ -149,27 +135,41 @@ private:
     std::function<void(const String&, const String&)> callback_;
 
     void parse_temperature(const String& line) {
+        int value_offset = 2;
         int t_idx = line.indexOf("T:");
-        if (t_idx < 0) t_idx = line.indexOf("T0:");
+        if (t_idx < 0) {
+            t_idx = line.indexOf("T0:");
+            value_offset = 3;
+        }
+        if (t_idx < 0) {
+            t_idx = line.indexOf("T1:");
+            value_offset = 3;
+        }
         if (t_idx >= 0) {
             float cur = 0, tgt = 0;
-            sscanf(line.substring(t_idx + 2).c_str(), "%f/%f", &cur, &tgt);
+            sscanf(line.substring(t_idx + value_offset).c_str(), "%f/%f", &cur, &tgt);
             if (callback_) callback_("temperature", String(cur) + "," + String(tgt));
         }
     }
 
     void parse_bed_temperature(const String& line) {
+        int value_offset = 2;
         int b_idx = line.indexOf("B:");
+        if (b_idx < 0) {
+            b_idx = line.indexOf("B0:");
+            value_offset = 3;
+        }
         if (b_idx >= 0) {
             float cur = 0, tgt = 0;
-            sscanf(line.substring(b_idx + 2).c_str(), "%f/%f", &cur, &tgt);
+            sscanf(line.substring(b_idx + value_offset).c_str(), "%f/%f", &cur, &tgt);
             if (callback_) callback_("bed_temperature", String(cur) + "," + String(tgt));
         }
     }
 
     void parse_position(const String& line) {
         float x=0, y=0, z=0, e=0;
-        sscanf(line.c_str(), "X:%f Y:%f Z:%f E:%f", &x, &y, &z, &e);
+        int x_idx = line.indexOf("X:");
+        sscanf(line.substring(x_idx).c_str(), "X:%f Y:%f Z:%f E:%f", &x, &y, &z, &e);
         if (callback_) callback_("position", String(x) + "," + String(y) + "," + String(z) + "," + String(e));
     }
 

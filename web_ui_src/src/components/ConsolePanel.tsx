@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react'
+import React, { useRef, useEffect } from 'react'
 
 interface ConsolePanelProps {
   logs: string[]
@@ -7,11 +7,11 @@ interface ConsolePanelProps {
 }
 
 export function ConsolePanel({ logs, onClear, onSend }: ConsolePanelProps) {
-  const [input, setInput] = useState('')
-  const [autoScroll, setAutoScroll] = useState(true)
-  const logsEndRef = useRef<HTMLDivElement>(null)
+  const [input, setInput] = React.useState('')
+  const [autoScroll, setAutoScroll] = React.useState(true)
+  const logsEndRef = React.useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
+  React.useEffect(() => {
     if (autoScroll) {
       logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }

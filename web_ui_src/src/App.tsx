@@ -1,177 +1,85 @@
-import { useState, useEffect } from 'react'
+import React from 'react'
 import { useWebSocket } from './hooks/useWebSocket'
 import { usePrinterStatus } from './hooks/usePrinterStatus'
 import { useFiles } from './hooks/useFiles'
-import { PrinterStatus, PrintProgress, FileInfo } from './types/printer'
-import { Header } from './components/Header'
-import { Sidebar } from './components/Sidebar'
-import { MonitorPanel } from './components/MonitorPanel'
-import { ControlPanel } from './components/ControlPanel'
+import { PrintProgress, PrinterStatus } from './types/printer'
+import { api } from './services/api'
 import { FileManager } from './components/FileManager'
-import { ConsolePanel } from './components/ConsolePanel'
 import { CameraView } from './components/CameraView'
 import { SettingsPanel } from './components/SettingsPanel'
-import { ToastContainer, toast } from './components/Toast'
-import { Modal } from './components/Modal'
+import { useToast } from './components/Toast'
 
-type Tab = 'monitor' | 'files' | 'control' | 'console' | 'camera' | 'settings'
+type Tab = 'dashboard' | 'files' | 'control' | 'console' | 'camera' | 'settings'
+const stateNames = ['idle', 'printing', 'paused', 'error', 'disconnected', 'booting', 'heating'] as const
+
+function normalizeStatus(value: any): PrinterStatus {
+  const raw = value?.data ?? value ?? {}
+  const number = (input: any, fallback = 0) => typeof input === 'number' && Number.isFinite(input) ? input : fallback
+  const temperature = (input: any) => ({ current: number(input?.current), target: number(input?.target), power: number(input?.power) })
+  const p = raw.progress || {}
+  const state = typeof raw.state === 'number' ? stateNames[raw.state] || 'disconnected' : (raw.state || 'disconnected')
+  return { ...raw, state, hotend: temperature(raw.hotend), bed: temperature(raw.bed), chamber: temperature(raw.chamber), position: { x: number(raw.position?.x), y: number(raw.position?.y), z: number(raw.position?.z), e: number(raw.position?.e), homed: [] }, fans: Array.isArray(raw.fans) ? raw.fans : [], progress: { filename: p.filename || '', file_size: number(p.file_size), file_pos: number(p.file_pos), progress: number(p.progress ?? p.percent), layer_current: number(p.layer_current), layer_total: number(p.layer_total), current_z: number(p.current_z), time_elapsed: number(p.time_elapsed), time_remaining: number(p.time_remaining), bytes_printed: number(p.bytes_printed) }, usb_connected: Boolean(raw.usb_connected), sd_inserted: Boolean(raw.sd_inserted) } as PrinterStatus
+}
+
+function Icon({ name }: { name: string }) { const icons: Record<string, string> = { dashboard: '⌂', files: '▤', control: '✣', console: '›_', camera: '◉', settings: '⚙' }; return <span className="nav-icon">{icons[name] || '•'}</span> }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('monitor')
-  const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [controlPanelOpen, setControlPanelOpen] = useState(false)
-  const [status, setStatus] = useState<PrinterStatus | null>(null)
-  const [progress, setProgress] = useState<PrintProgress | null>(null)
-  const [logs, setLogs] = useState<string[]>([])
-  const [files, setFiles] = useState<FileInfo[]>([])
-  const [selectedFile, setSelectedFile] = useState<FileInfo | null>(null)
-  const [printConfirm, setPrintConfirm] = useState<{file: string, mode: 'stream' | 'sd'} | null>(null)
-  const [emergencyStop, setEmergencyStop] = useState(false)
+  const toast = useToast()
+  const [tab, setTab] = React.useState<Tab>('dashboard')
+  const [status, setStatus] = React.useState<PrinterStatus | null>(null)
+  const [progress, setProgress] = React.useState<PrintProgress | null>(null)
+  const [logs, setLogs] = React.useState<string[]>([])
+  const [selectedFile, setSelectedFile] = React.useState('')
+  const [busy, setBusy] = React.useState(false)
+  const [hotendTarget, setHotendTarget] = React.useState(0)
+  const [bedTarget, setBedTarget] = React.useState(0)
+  const { files, loading: filesLoading, upload, deleteFile, copyToPrinter, fetchFiles } = useFiles()
+  const { status: polledStatus, progress: polledProgress } = usePrinterStatus(5000)
+  const { connected, sendGcode } = useWebSocket({ onStatus: value => setStatus(normalizeStatus(value)), onProgress: value => setProgress(value), onLog: (level, message) => setLogs(prev => [...prev.slice(-99), `[${new Date().toLocaleTimeString()}] ${level}: ${message}`]), onFileList: () => fetchFiles(), onStateChange: state => toast.info(`Printer state: ${state}`) })
 
-  const { connected, sendGcode } = useWebSocket({
-    onStatus: setStatus,
-    onProgress: setProgress,
-    onLog: (level, message) => {
-      setLogs(prev => [...prev.slice(-99), `[${new Date().toLocaleTimeString()}] [${level}] ${message}`])
-    },
-    onFileList: setFiles,
-    onStateChange: (stateStr) => {
-      toast.success(`Printer state: ${stateStr}`)
-    }
-  })
+  React.useEffect(() => { if (polledStatus) setStatus(normalizeStatus(polledStatus)); if (polledProgress) setProgress(polledProgress) }, [polledStatus, polledProgress])
+  React.useEffect(() => { if (!selectedFile && files.length) setSelectedFile(files[0].name) }, [files, selectedFile])
+  const run = async (action: () => Promise<any>, success: string) => { setBusy(true); try { const result = await action(); if (result?.success === false) throw new Error(result.error || 'İşlem başarısız'); toast.success(success); return result } catch { toast.error('İşlem başarısız oldu'); return null } finally { setBusy(false) } }
+  const startPrint = (file = selectedFile, requestedMode?: 'stream' | 'sd') => { if (!file) return toast.warning('Önce bir G-code dosyası seçin'); const selected = files.find(item => item.name === file); const mode = requestedMode || (selected?.on_printer_sd ? 'sd' : 'stream'); void (async () => { const result = await run(() => api.startPrint(file, mode), `${file} baskısı başlatıldı`); if (result) setTab('dashboard') })() }
+  const statusLabel = status?.state === 'printing' ? 'Baskı sürüyor' : status?.state === 'paused' ? 'Duraklatıldı' : status?.state === 'heating' ? 'Isınıyor' : status?.state === 'error' ? 'Hata' : 'Hazır'
+  const currentProgress = progress || status?.progress
+  const percent = Math.max(0, Math.min(100, currentProgress?.progress || 0))
+  const nav = ([['dashboard', 'Dashboard'], ['files', 'G-code Files'], ['control', 'Printer Control'], ['console', 'Console'], ['camera', 'Camera'], ['settings', 'Settings']] as [Tab, string][]) 
 
-  const { status: polledStatus, progress: polledProgress, refresh: refreshStatus } = usePrinterStatus(5000)
-  const { files: fetchedFiles, loading: filesLoading, upload, deleteFile, copyToPrinter, fetchFiles } = useFiles()
+  return <div className="app-shell"><aside className="app-sidebar"><div className="brand"><div className="brand-mark">E3</div><div><strong>Ender Control</strong><small>ESP32-S3 remote</small></div></div><nav className="nav-list">{nav.map(([id, label]) => <button key={id} className={`nav-item ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}><Icon name={id} />{label}</button>)}</nav><div className="sidebar-footer"><span className={`connection-dot ${connected ? 'online' : ''}`} />{connected ? 'ESP32 connected' : 'Waiting for ESP32'}</div></aside>
+    <main className="app-main"><header className="topbar"><div><div className="eyebrow">ENDER 3 S1 / REMOTE CONSOLE</div><h1>{tab === 'dashboard' ? 'Print dashboard' : tab === 'files' ? 'G-code library' : tab === 'camera' ? 'Camera' : tab[0].toUpperCase() + tab.slice(1)}</h1></div><div className="topbar-actions"><span className={`status-pill ${connected ? 'online' : ''}`}><span className="status-dot" />{connected ? 'Online' : 'Offline'}</span><button className="btn btn-danger" onClick={() => void run(() => api.sendGcode('M112'), 'Emergency stop gönderildi')}>EMERGENCY STOP</button></div></header>
+      {tab === 'dashboard' && <div className="page dashboard-page"><section className="hero-grid"><div className="hero-card"><div className="hero-top"><div><span className="eyebrow">CURRENT JOB</span><h2>{currentProgress?.filename || 'No active print'}</h2></div><span className={`state-badge ${status?.state || 'disconnected'}`}><span className="status-dot" />{statusLabel}</span></div><div className="progress-value">{percent.toFixed(0)}<small>%</small></div><div className="big-progress"><span style={{ width: `${percent}%` }} /></div><div className="job-meta"><span>{currentProgress?.time_elapsed ? `${Math.floor(currentProgress.time_elapsed / 60)} min elapsed` : 'Ready to print'}</span><span>{currentProgress?.layer_current ? `Layer ${currentProgress.layer_current} / ${currentProgress.layer_total || '—'}` : 'No layer data'}</span></div><div className="hero-actions"><select className="select" value={selectedFile} onChange={e => setSelectedFile(e.target.value)}><option value="">Choose a G-code file</option>{files.map(file => <option key={file.name} value={file.name}>{file.name}{file.on_printer_sd ? ' · SD' : ''}</option>)}</select><button className="btn btn-primary" disabled={!selectedFile || busy || status?.state === 'printing'} onClick={() => startPrint()}>▶ Start print</button><button className="btn btn-secondary" disabled={status?.state !== 'printing' && status?.state !== 'paused'} onClick={() => void run(() => status?.state === 'paused' ? api.resumePrint() : api.pausePrint(), status?.state === 'paused' ? 'Baskı devam ediyor' : 'Baskı duraklatıldı')}>{status?.state === 'paused' ? 'Resume' : 'Pause'}</button><button className="btn btn-ghost" disabled={status?.state !== 'printing' && status?.state !== 'paused'} onClick={() => void run(() => api.cancelPrint(), 'Baskı iptal edildi')}>Stop</button></div></div><div className="upload-card"><div className="card-heading"><div><span className="eyebrow">QUICK UPLOAD</span><h3>Send a new G-code</h3></div><span className="upload-icon">↑</span></div><label className="dropzone"><input type="file" accept=".gcode,.g,.gco" onChange={async e => { const file = e.target.files?.[0]; if (file) { const uploadedName = await upload(file); if (uploadedName) { toast.success(`${uploadedName} ESP32'ye yüklendi`); setSelectedFile(uploadedName) } else toast.error('Dosya yüklenemedi'); await fetchFiles() } e.currentTarget.value = '' }} /><strong>Drop a file here or browse</strong><span>G-code files only · stored on ESP32</span></label><button className="btn btn-secondary full-width" onClick={() => setTab('files')}>Open file library →</button></div></section><section className="metric-grid"><Metric label="Hotend" value={status?.hotend.current} target={status?.hotend.target} unit="°C" tone="hot" /><Metric label="Build plate" value={status?.bed.current} target={status?.bed.target} unit="°C" tone="bed" /><Metric label="Position Z" value={status?.position.z} unit="mm" tone="blue" /><Metric label="USB printer" value={status?.usb_connected ? 1 : 0} unit={status?.usb_connected ? 'Connected' : 'Disconnected'} tone="green" /></section><section className="lower-grid"><div className="panel-card"><div className="card-heading"><div><span className="eyebrow">MACHINE</span><h3>Printer status</h3></div><span className="muted">Ender 3 S1</span></div><div className="status-list"><StatusRow label="Controller" value={connected ? 'ESP32-S3 online' : 'Offline'} good={connected} /><StatusRow label="Marlin link" value={status?.usb_connected ? 'USB CDC ready' : 'Not detected'} good={Boolean(status?.usb_connected)} /><StatusRow label="SD card" value={status?.sd_inserted ? 'Inserted' : 'Not detected'} good={Boolean(status?.sd_inserted)} /><StatusRow label="Files" value={`${files.length} available`} /></div></div><div className="panel-card"><div className="card-heading"><div><span className="eyebrow">POSITION</span><h3>Live coordinates</h3></div><button className="btn btn-ghost btn-sm" onClick={() => void run(() => api.home({}), 'Axes homed')}>Home all</button></div><div className="axis-grid">{(['x', 'y', 'z', 'e'] as const).map(axis => <div className="axis" key={axis}><span>{axis.toUpperCase()}</span><strong>{(status?.position?.[axis] || 0).toFixed(2)}</strong><small>mm</small></div>)}</div></div></section></div>}
+      {tab === 'files' && <div className="page"><FileManager files={files} loading={filesLoading} onRefresh={fetchFiles} onUpload={async file => { const uploadedName = await upload(file); if (uploadedName) toast.success(`${uploadedName} yüklendi`); return uploadedName }} onDelete={async (name, sd) => { const ok = await deleteFile(name, sd); if (ok) toast.success(`${name} silindi`); return ok }} onCopyToPrinter={async name => { const ok = await copyToPrinter(name); if (ok) toast.success(`${name} yazıcı SD kartına kopyalandı`); return ok }} onPrint={startPrint} /></div>}
+      {tab === 'control' && <PrinterControl hotendTarget={hotendTarget} bedTarget={bedTarget} setHotendTarget={setHotendTarget} setBedTarget={setBedTarget} run={run} sendGcode={sendGcode} />}
+      {tab === 'console' && <div className="page"><div className="panel-card console-page"><div className="card-heading"><div><span className="eyebrow">SERIAL LOG</span><h2>G-code console</h2></div><button className="btn btn-ghost" onClick={() => setLogs([])}>Clear</button></div><div className="console-output">{logs.length ? logs.map((line, index) => <div key={index}>{line}</div>) : <span className="muted">No messages yet.</span>}</div><input className="input" placeholder="Send a G-code command and press Enter" onKeyDown={e => { if (e.key === 'Enter') { sendGcode(e.currentTarget.value); e.currentTarget.value = '' } }} /></div></div>}
+      {tab === 'camera' && <div className="page"><div className="panel-card camera-page"><CameraView /></div></div>}
+      {tab === 'settings' && <div className="page"><SettingsPanel /></div>}
+    </main></div>
+}
 
-  // Merge WebSocket and polled status
-  useEffect(() => {
-    if (polledStatus && !status) setStatus(polledStatus)
-    if (polledProgress && !progress) setProgress(polledProgress)
-  }, [polledStatus, polledProgress, status, progress])
+function Metric({ label, value, target, unit, tone }: { label: string; value?: number; target?: number; unit: string; tone: string }) { const numeric = typeof value === 'number' ? value : 0; return <div className={`metric-card ${tone}`}><div className="metric-label">{label}</div><div className="metric-value">{unit === 'Connected' || unit === 'Disconnected' ? unit : `${numeric.toFixed(1)}${unit}`}</div>{target !== undefined && <div className="metric-target">Target {target.toFixed(0)}°C</div>}<div className="metric-line"><span style={{ width: `${target && target > 0 ? Math.min(100, numeric / target * 100) : 0}%` }} /></div></div> }
+function StatusRow({ label, value, good }: { label: string; value: string; good?: boolean }) { return <div className="status-row"><span>{label}</span><span className={good === undefined ? '' : good ? 'good' : 'bad'}>{value}</span></div> }
 
-  const handlePrintStart = (file: string, mode: 'stream' | 'sd') => {
-    setSelectedFile(files.find(f => f.name === file) || null)
-    setPrintConfirm({ file, mode })
+function PrinterControl({ hotendTarget, bedTarget, setHotendTarget, setBedTarget, run, sendGcode }: {
+  hotendTarget: number
+  bedTarget: number
+  setHotendTarget: (value: number) => void
+  setBedTarget: (value: number) => void
+  run: (action: () => Promise<any>, success: string) => Promise<any>
+  sendGcode: (command: string) => void
+}) {
+  const [jogStep, setJogStep] = React.useState(10)
+  const jog = (axis: 'x' | 'y' | 'z', direction: number) => {
+    const delta = jogStep * direction
+    void run(() => api.move({ [axis]: delta, relative: true, feedrate: axis === 'z' ? 600 : 3000 }), `${axis.toUpperCase()} ekseni hareket ettirildi`)
   }
+  const home = (axes: { x?: boolean; y?: boolean; z?: boolean }, label: string) => void run(() => api.home(axes), `${label} home yapıldı`)
 
-  const confirmPrint = async () => {
-    if (!printConfirm) return
-    try {
-      // Call API to start print
-      const res = await fetch('/api/print/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer changeme123` },
-        body: JSON.stringify({ file: printConfirm.file, mode: printConfirm.mode })
-      })
-      if (res.ok) {
-        toast.success(`Print started: ${printConfirm.file}`)
-        setActiveTab('monitor')
-      } else {
-        toast.error('Failed to start print')
-      }
-    } catch {
-      toast.error('Failed to start print')
-    }
-    setPrintConfirm(null)
-  }
-
-  const handleEmergencyStop = async () => {
-    setEmergencyStop(true)
-    try {
-      await fetch('/api/gcode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer changeme123` },
-        body: JSON.stringify({ command: 'M112' })
-      })
-      toast.error('EMERGENCY STOP triggered!')
-    } catch {
-      toast.error('Failed to send emergency stop')
-    }
-    setTimeout(() => setEmergencyStop(false), 2000)
-  }
-
-  return (
-    <div className="app-layout">
-      {/* Sidebar */}
-      <aside className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
-        <Sidebar 
-          activeTab={activeTab} 
-          onTabChange={setActiveTab}
-          status={status}
-          connected={connected}
-        />
-      </aside>
-
-      {/* Main Content */}
-      <main className="main-content">
-        <Header 
-          status={status}
-          connected={connected}
-          onMenuClick={() => setSidebarOpen(!sidebarOpen)}
-          onControlClick={() => setControlPanelOpen(!controlPanelOpen)}
-          emergencyStop={emergencyStop}
-        />
-
-        <div className="flex-1 flex overflow-hidden">
-          {/* Content Area */}
-          <div className="flex-1 flex flex-col overflow-hidden p-4">
-            {activeTab === 'monitor' && (
-              <MonitorPanel 
-                status={status} 
-                progress={progress}
-                connected={connected}
-                onPrintStart={handlePrintStart}
-              />
-            )}
-            {activeTab === 'files' && (
-              <FileManager 
-                files={files}
-                loading={filesLoading}
-                onRefresh={fetchFiles}
-                onUpload={upload}
-                onDelete={deleteFile}
-                onCopyToPrinter={copyToPrinter}
-                onPrint={handlePrintStart}
-              />
-            )}
-            {activeTab === 'control' && (
-              <ControlPanel 
-                status={status}
-                onSendGcode={sendGcode}
-              />
-            )}
-            {activeTab === 'console' && (
-              <ConsolePanel logs={logs} onClear={() => setLogs([])} onSend={sendGcode} />
-            )}
-            {activeTab === 'camera' && <CameraView />}
-            {activeTab === 'settings' && <SettingsPanel />}
-          </div>
-
-          {/* Control Panel (Right Sidebar) */}
-          <aside className={`control-panel ${controlPanelOpen ? 'open' : ''}`}>
-            <ControlPanel 
-              status={status}
-              onSendGcode={sendGcode}
-            />
-          </aside>
-        </div>
-      </main>
-
-      {/* Modals */}
-      {printConfirm && (
-        <Modal
-          title="Start Print"
-          onClose={() => setPrintConfirm(null)}
-          onConfirm={confirmPrint}
-        >
-          <p>Start printing <strong>{printConfirm.file}</strong>?</p>
-          <p className="text-secondary text-sm mt-2">
-            Mode: {printConfirm.mode === 'stream' ? 'Stream from ESP32 (recommended)' : 'Copy to printer SD card'}
-          </p>
-        </Modal>
-      )}
-
-      <ToastContainer />
-    </div>
-  )
+  return <div className="page"><div className="panel-card control-page">
+    <div className="card-heading"><div><span className="eyebrow">MANUAL CONTROL</span><h2>Printer controls</h2></div></div>
+    <div className="control-section"><h3>Temperatures</h3><div className="control-inputs"><label>Hotend °C<input className="input" type="number" value={hotendTarget} onChange={e => setHotendTarget(Number(e.target.value))} /></label><label>Bed °C<input className="input" type="number" value={bedTarget} onChange={e => setBedTarget(Number(e.target.value))} /></label><button className="btn btn-primary" onClick={() => void run(() => api.setTemperature(hotendTarget, bedTarget), 'Sıcaklık hedefleri gönderildi')}>Set temperature</button></div></div>
+    <div className="control-section"><div className="card-heading"><div><h3>Jog movement</h3><p className="control-hint">Relative movement · nozzle hareket etmeden önce güvenli bir step seçin.</p></div><label>Step<select className="select step-select" value={jogStep} onChange={e => setJogStep(Number(e.target.value))}><option value="0.1">0.1 mm</option><option value="1">1 mm</option><option value="10">10 mm</option><option value="50">50 mm</option></select></label></div><div className="jog-grid"><span /><button className="btn btn-secondary" onClick={() => jog('y', 1)}>Y+</button><span /><button className="btn btn-secondary" onClick={() => jog('x', -1)}>X−</button><span className="jog-center">XY</span><button className="btn btn-secondary" onClick={() => jog('x', 1)}>X+</button><span /><button className="btn btn-secondary" onClick={() => jog('y', -1)}>Y−</button><span /><button className="btn btn-secondary" onClick={() => jog('z', 1)}>Z+</button><span /><button className="btn btn-secondary" onClick={() => jog('z', -1)}>Z−</button><span /></div></div>
+    <div className="control-section"><h3>Auto home</h3><div className="home-grid"><button className="btn btn-primary" onClick={() => home({}, 'Tüm eksenler')}>Home all</button><button className="btn btn-secondary" onClick={() => home({ x: true }, 'X')}>Home X</button><button className="btn btn-secondary" onClick={() => home({ y: true }, 'Y')}>Home Y</button><button className="btn btn-secondary" onClick={() => home({ z: true }, 'Z')}>Home Z</button></div></div>
+    <div className="control-section"><h3>G-code</h3><div className="gcode-row"><input className="input" placeholder="M105, G28, M114 ..." onKeyDown={e => { if (e.key === 'Enter') { sendGcode(e.currentTarget.value); e.currentTarget.value = '' } }} /><button className="btn btn-secondary" onClick={() => sendGcode('M105')}>Query temperature</button></div></div>
+  </div></div>
 }

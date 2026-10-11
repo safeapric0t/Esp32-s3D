@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, ReactNode } from 'react'
+import React, { createContext, ReactNode } from 'react'
 
 interface Toast {
   id: number
@@ -17,7 +17,7 @@ interface ToastContextType {
 const ToastContext = createContext<ToastContextType | null>(null)
 
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toasts, setToasts] = useState<Toast[]>([])
+  const [toasts, setToasts] = React.useState<Toast[]>([])
 
   const addToast = (type: Toast['type'], message: string) => {
     const id = Date.now()
@@ -44,7 +44,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 }
 
 export function useToast() {
-  const context = useContext(ToastContext)
+  const context = React.useContext(ToastContext)
   if (!context) throw new Error('useToast must be used within ToastProvider')
   return context
 }
@@ -76,9 +76,4 @@ function ToastContainer({ toasts, onRemove }: ToastContainerProps) {
   )
 }
 
-export { ToastContainer };
-export function toast() {}
-toast.success = (msg: string) => console.log('success:', msg)
-toast.error = (msg: string) => console.log('error:', msg)
-toast.warning = (msg: string) => console.log('warning:', msg)
-toast.info = (msg: string) => console.log('info:', msg)
+export { ToastContainer }

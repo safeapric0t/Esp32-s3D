@@ -18,11 +18,172 @@ extern uint32_t g_file_size;
 extern uint32_t g_file_pos;
 extern uint32_t g_lines_sent;
 extern String g_current_file;
+extern volatile uint32_t g_printer_ok_counter;
+extern volatile uint32_t g_printer_error_counter;
 
 AsyncWebServer g_server(80);
 AsyncWebSocket g_ws("/ws");
 
 extern bool send_gcode(const String& cmd);
+
+// Upload state is shared between the multipart body callback and the final
+// request callback.  The old route sent an empty 200 response immediately,
+// which made the browser parse an empty body as JSON and report upload failed.
+static File g_upload_file;
+static String g_upload_filename;
+static String g_upload_error;
+static bool g_upload_success = false;
+static bool g_upload_on_printer_sd = false;
+static String g_upload_warning;
+
+static bool is_gcode_filename(const String& filename) {
+    String lower = filename;
+    lower.toLowerCase();
+    return lower.endsWith(".gcode") || lower.endsWith(".g") || lower.endsWith(".gco");
+}
+
+static String sanitize_gcode_filename(const String& original) {
+    int slash = original.lastIndexOf('/');
+    int backslash = original.lastIndexOf('\\');
+    int separator = slash > backslash ? slash : backslash;
+    String name = separator >= 0 ? original.substring(separator + 1) : original;
+    name.trim();
+
+    String safe;
+    for (size_t i = 0; i < name.length(); i++) {
+        char c = name[i];
+        if (isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-') safe += c;
+        else if (c == ' ') safe += '_';
+    }
+    if (safe.length() == 0) safe = "upload.gcode";
+
+    // ESP32 SPIFFS has a short maximum path length.  Keep the extension and
+    // truncate only the base name so long browser filenames remain valid
+    // G-code files instead of failing fopen().
+    const size_t max_filename_length = 24;
+    if (safe.length() > max_filename_length) {
+        int dot = safe.lastIndexOf('.');
+        String extension = dot > 0 ? safe.substring(dot) : ".gcode";
+        size_t base_limit = max_filename_length > extension.length()
+            ? max_filename_length - extension.length() : 1;
+        String base = dot > 0 ? safe.substring(0, dot) : safe;
+        if (base.length() > base_limit) base = base.substring(0, base_limit);
+        safe = base + extension;
+    }
+    return safe;
+}
+
+static String gcode_storage_path(const String& filename) {
+    return "/gcode_" + filename;
+}
+
+static String gcode_display_name(const String& path) {
+    String name = path;
+    int slash = name.lastIndexOf('/');
+    if (slash >= 0) name = name.substring(slash + 1);
+    if (name.startsWith("gcode_")) name = name.substring(6);
+    return name;
+}
+
+static bool printer_sd_contains(const String& filename) {
+    for (size_t i = 0; i < printer_status.sd_files.size(); i++) {
+        if (printer_status.sd_files[i].equalsIgnoreCase(filename)) return true;
+    }
+    return false;
+}
+
+static String make_printer_sd_filename(const String& source) {
+    int dot = source.lastIndexOf('.');
+    String base = dot > 0 ? source.substring(0, dot) : source;
+    base.toUpperCase();
+
+    String clean;
+    for (size_t i = 0; i < base.length(); i++) {
+        char c = base[i];
+        if (isalnum((unsigned char)c)) clean += c;
+    }
+    if (clean.length() == 0) clean = "UPLOAD";
+    if (clean.length() > 8) clean = clean.substring(0, 8);
+
+    String candidate = clean + ".GCO";
+    if (!printer_sd_contains(candidate)) return candidate;
+
+    for (uint8_t suffix = 1; suffix < 100; suffix++) {
+        String numbered = clean;
+        if (numbered.length() > 6) numbered = numbered.substring(0, 6);
+        if (suffix < 10) numbered += "0";
+        numbered += String(suffix);
+        numbered += ".GCO";
+        if (!printer_sd_contains(numbered)) return numbered;
+    }
+    return "UPLOAD99.GCO";
+}
+
+static bool wait_for_printer_ack(uint32_t ok_before, uint32_t error_before, uint32_t timeout_ms) {
+    uint32_t started = millis();
+    while (millis() - started < timeout_ms) {
+        if (g_printer_error_counter != error_before) return false;
+        if (g_printer_ok_counter != ok_before) return true;
+        delay(10);
+    }
+    return false;
+}
+
+static void refresh_printer_sd_list() {
+    if (!g_cdc_serial || !g_cdc_serial->connected()) return;
+    g_cdc_serial->println("M21");
+    delay(150);
+    g_cdc_serial->println("M20");
+    delay(900);
+}
+
+static bool copy_spiffs_file_to_printer_sd(const String& source_name, const String& printer_name) {
+    if (!g_usb_connected || !g_cdc_serial || !g_cdc_serial->connected() || !printer_status.sd_inserted) {
+        return false;
+    }
+
+    File source = SPIFFS.open(gcode_storage_path(source_name), "r");
+    if (!source) return false;
+
+    uint32_t ok_before = g_printer_ok_counter;
+    uint32_t error_before = g_printer_error_counter;
+    g_cdc_serial->println("M28 " + printer_name);
+    if (!wait_for_printer_ack(ok_before, error_before, 2000)) {
+        source.close();
+        return false;
+    }
+
+    uint8_t buffer[256];
+    bool write_ok = true;
+    while (source.available()) {
+        size_t read_count = source.read(buffer, sizeof(buffer));
+        if (read_count == 0) {
+            write_ok = false;
+            break;
+        }
+        size_t sent = g_cdc_serial->write(buffer, read_count);
+        if (sent != read_count) {
+            write_ok = false;
+            break;
+        }
+        delay(8);
+    }
+    source.close();
+    if (!write_ok) {
+        g_cdc_serial->println("M29");
+        return false;
+    }
+
+    delay(250);
+    ok_before = g_printer_ok_counter;
+    error_before = g_printer_error_counter;
+    g_cdc_serial->println("M29");
+    bool closed_ok = wait_for_printer_ack(ok_before, error_before, 3000);
+    if (!closed_ok) return false;
+
+    refresh_printer_sd_list();
+    return true;
+}
 
 void broadcast_status(AsyncWebSocketClient* client) {
     DynamicJsonDocument doc(4096);
@@ -45,6 +206,11 @@ void broadcast_status(AsyncWebSocketClient* client) {
     bed["current"] = printer_status.bed.current;
     bed["target"] = printer_status.bed.target;
     bed["power"] = printer_status.bed.power;
+
+    JsonObject chamber = data.createNestedObject("chamber");
+    chamber["current"] = printer_status.chamber.current;
+    chamber["target"] = printer_status.chamber.target;
+    chamber["power"] = printer_status.chamber.power;
     
     JsonObject pos = data.createNestedObject("position");
     pos["x"] = printer_status.position.x;
@@ -126,14 +292,15 @@ void broadcast_file_list() {
     DynamicJsonDocument doc(8192);
     JsonArray arr = doc.createNestedArray("data");
     
-    File root = SPIFFS.open("/gcode");
+    File root = SPIFFS.open("/");
     File file = root.openNextFile();
     while (file) {
         if (!file.isDirectory()) {
-            String name = file.name();
-            if (name.endsWith(".gcode") || name.endsWith(".g") || name.endsWith(".gco")) {
+            String fullName = file.name();
+            String name = gcode_display_name(fullName);
+            if (fullName.indexOf("gcode_") >= 0 && is_gcode_filename(name)) {
                 JsonObject obj = arr.createNestedObject();
-                obj["name"] = name.substring(name.lastIndexOf('/') + 1);
+                obj["name"] = name;
                 obj["size"] = file.size();
                 obj["date"] = file.getLastWrite();
                 obj["is_dir"] = false;
@@ -244,6 +411,11 @@ void handle_status(AsyncWebServerRequest* request) {
     bed["current"] = printer_status.bed.current;
     bed["target"] = printer_status.bed.target;
     bed["power"] = printer_status.bed.power;
+
+    JsonObject chamber = data.createNestedObject("chamber");
+    chamber["current"] = printer_status.chamber.current;
+    chamber["target"] = printer_status.chamber.target;
+    chamber["power"] = printer_status.chamber.power;
     
     JsonObject pos = data.createNestedObject("position");
     pos["x"] = printer_status.position.x;
@@ -278,14 +450,15 @@ void handle_files(AsyncWebServerRequest* request) {
     DynamicJsonDocument doc(8192);
     JsonArray arr = doc.to<JsonArray>();
     
-    File root = SPIFFS.open("/gcode");
+    File root = SPIFFS.open("/");
     File file = root.openNextFile();
     while (file) {
         if (!file.isDirectory()) {
-            String name = file.name();
-            if (name.endsWith(".gcode") || name.endsWith(".g") || name.endsWith(".gco")) {
+            String fullName = file.name();
+            String name = gcode_display_name(fullName);
+            if (fullName.indexOf("gcode_") >= 0 && is_gcode_filename(name)) {
                 JsonObject obj = arr.createNestedObject();
-                obj["name"] = name.substring(name.lastIndexOf('/') + 1);
+                obj["name"] = name;
                 obj["size"] = file.size();
                 obj["date"] = file.getLastWrite();
                 obj["is_dir"] = false;
@@ -310,75 +483,40 @@ void handle_files(AsyncWebServerRequest* request) {
 }
 
 void handle_upload(AsyncWebServerRequest* request, String filename, size_t index, uint8_t* data, size_t len, bool final) {
-    static bool to_printer_sd = false;
-    static File upload_file;
-    static String safeFilename;
-    static String spiffsPath;
-    
     if (index == 0) {
-        if (!filename.endsWith(".gcode") && !filename.endsWith(".g") && !filename.endsWith(".gco")) {
-            request->send(400, "application/json", "{\"error\":\"Only .gcode files allowed\"}");
+        g_upload_success = false;
+        g_upload_error = "";
+        g_upload_filename = "";
+        g_upload_on_printer_sd = false;
+        g_upload_warning = "";
+        if (!is_gcode_filename(filename)) {
+            g_upload_error = "Only .gcode, .g or .gco files are allowed";
             return;
         }
-        
-        safeFilename = filename;
-        int dotIdx = safeFilename.lastIndexOf('.');
-        String base = (dotIdx > 0) ? safeFilename.substring(0, dotIdx) : safeFilename;
-        String ext = (dotIdx > 0) ? safeFilename.substring(dotIdx) : "";
-        if (base.length() > 8) base = base.substring(0, 8);
-        if (ext.length() > 4) ext = ext.substring(0, 4);
-        safeFilename = base + ext;
-        
-        spiffsPath = "/gcode/" + safeFilename;
-        
-        upload_file = SPIFFS.open(spiffsPath, "w");
-        if (!upload_file) {
-            request->send(500, "application/json", "{\"error\":\"Failed to create file on ESP32\"}");
+
+        g_upload_filename = sanitize_gcode_filename(filename);
+        g_upload_file = SPIFFS.open(gcode_storage_path(g_upload_filename), "w");
+        if (!g_upload_file) {
+            Serial0.printf("GCODE upload open failed: %s total=%u used=%u free=%u\n",
+                           gcode_storage_path(g_upload_filename).c_str(),
+                           SPIFFS.totalBytes(), SPIFFS.usedBytes(),
+                           SPIFFS.totalBytes() - SPIFFS.usedBytes());
+            g_upload_error = "Failed to create file on ESP32";
             return;
         }
     }
-    
-    if (len > 0) {
-        if (upload_file) {
-            upload_file.write(data, len);
-        }
+
+    if (len > 0 && g_upload_file && g_upload_error.length() == 0) {
+        size_t written = g_upload_file.write(data, len);
+        if (written != len) g_upload_error = "Failed while writing file to ESP32";
     }
-    
+
     if (final) {
-        if (upload_file) {
-            upload_file.close();
-            upload_file = File();
+        if (g_upload_file) {
+            g_upload_file.close();
+            g_upload_file = File();
         }
-        
-        if (g_cdc_serial && g_cdc_serial->connected()) {
-            Serial0.printf("Copy to printer SD: M28 %s\n", safeFilename.c_str());
-            g_cdc_serial->println("M28 " + safeFilename);
-            delay(1000);
-            
-            File spiffsFile = SPIFFS.open(spiffsPath, "r");
-            if (spiffsFile) {
-                uint8_t buf[512];
-                while (spiffsFile.available()) {
-                    size_t len = spiffsFile.read(buf, sizeof(buf));
-                    if (len > 0) {
-                        g_cdc_serial->write(buf, len);
-                        delay(10);
-                    }
-                }
-                spiffsFile.close();
-            }
-            
-            delay(500);
-            Serial0.println("Upload: M29");
-            g_cdc_serial->println("M29");
-            delay(1000);
-            
-            g_cdc_serial->println("M20");
-            
-            request->send(200, "application/json", "{\"success\":true,\"filename\":\"" + safeFilename + "\",\"message\":\"Uploaded to ESP32, copying to printer SD\"}");
-        } else {
-            request->send(200, "application/json", "{\"success\":true,\"filename\":\"" + safeFilename + "\",\"message\":\"Stored on ESP32 (printer not connected)\"}");
-        }
+        g_upload_success = g_upload_error.length() == 0;
     }
 }
 
@@ -387,15 +525,24 @@ void handle_delete(AsyncWebServerRequest* request) {
     String name = request->getParam("name")->value();
     bool on_printer_sd = request->hasParam("printer_sd") && request->getParam("printer_sd")->value() == "true";
     
-    String path = "/gcode/" + name;
+    String path = gcode_storage_path(name);
+    bool removed_any = false;
     if (SPIFFS.exists(path)) {
-        SPIFFS.remove(path);
+        removed_any = SPIFFS.remove(path) || removed_any;
     }
     if (on_printer_sd) {
         if (g_cdc_serial && g_cdc_serial->connected()) {
             g_cdc_serial->println("M30 " + name);
+            delay(300);
+            refresh_printer_sd_list();
+            removed_any = true;
         }
     }
+    if (!removed_any) {
+        request->send(404, "application/json", "{\"success\":false,\"error\":\"File not found\"}");
+        return;
+    }
+    broadcast_file_list();
     request->send(200, "application/json", "{\"success\":true}");
 }
 
@@ -403,28 +550,17 @@ void handle_copy_to_printer(AsyncWebServerRequest* request) {
     if (!request->hasParam("name")) { request->send(400); return; }
     String name = request->getParam("name")->value();
     
-    String path = "/gcode/" + name;
+    String path = gcode_storage_path(name);
     File f = SPIFFS.open(path, "r");
     if (!f) { request->send(404); return; }
     
-    if (g_cdc_serial && g_cdc_serial->connected()) {
-        g_cdc_serial->println("M28 " + name);
-        delay(100);
-        
-        uint8_t buf[512];
-        while (f.available()) {
-            size_t len = f.read(buf, sizeof(buf));
-            if (len > 0) g_cdc_serial->write(buf, len);
-            delay(5);
-        }
-        f.close();
-        
-        delay(100);
-        send_gcode("M29");
-    }
+    String printer_name = make_printer_sd_filename(name);
     f.close();
-    
-    request->send(200, "application/json", "{\"success\":true}");
+    if (!copy_spiffs_file_to_printer_sd(name, printer_name)) {
+        request->send(409, "application/json", "{\"success\":false,\"error\":\"Could not copy file to printer SD card\"}");
+        return;
+    }
+    request->send(200, "application/json", "{\"success\":true,\"filename\":\"" + printer_name + "\",\"on_printer_sd\":true}");
 }
 
 void handle_print_start(AsyncWebServerRequest* request) {
@@ -446,13 +582,32 @@ void handle_print_start(AsyncWebServerRequest* request) {
         return; 
     }
     
-    extern void start_stream_print(const String&);
-    extern void start_sd_print(const String&);
-    
-    if (mode == "stream") {
-        start_stream_print(file);
-    } else {
-        start_sd_print(file);
+    if (mode != "stream" && mode != "sd") {
+        request->send(400, "application/json", "{\"success\":false,\"error\":\"Invalid print mode\"}");
+        return;
+    }
+    if (!g_usb_connected || !g_cdc_serial || !g_cdc_serial->connected()) {
+        request->send(503, "application/json", "{\"success\":false,\"error\":\"Printer USB is not connected\"}");
+        return;
+    }
+    if (mode == "sd" && !printer_status.sd_inserted) {
+        request->send(409, "application/json", "{\"success\":false,\"error\":\"Printer SD card is not detected\"}");
+        return;
+    }
+    if (mode == "stream" && !SPIFFS.exists(gcode_storage_path(file))) {
+        request->send(404, "application/json", "{\"success\":false,\"error\":\"G-code file is not stored on ESP32\"}");
+        return;
+    }
+
+    extern bool start_stream_print(const String&);
+    extern bool start_sd_print(const String&);
+    bool started = mode == "stream" ? start_stream_print(file) : start_sd_print(file);
+    if (!started) {
+        String error = mode == "stream"
+            ? "G-code file is not available on ESP32 or a print is already running"
+            : "Printer rejected the SD print command";
+        request->send(409, "application/json", "{\"success\":false,\"error\":\"" + error + "\"}");
+        return;
     }
     request->send(200, "application/json", "{\"success\":true,\"file\":\"" + file + "\",\"mode\":\"" + mode + "\"}");
 }
@@ -476,9 +631,12 @@ void handle_cancel(AsyncWebServerRequest* request) {
 }
 
 void handle_gcode(AsyncWebServerRequest* request) {
-    if (!request->hasParam("command", true)) { request->send(400); return; }
-    String cmd = request->getParam("command", true)->value();
-    send_gcode(cmd);
+    if (!request->hasParam("command")) { request->send(400); return; }
+    String cmd = request->getParam("command")->value();
+    if (!send_gcode(cmd)) {
+        request->send(503, "application/json", "{\"success\":false,\"error\":\"Printer USB is not connected\"}");
+        return;
+    }
     request->send(200, "application/json", "{\"success\":true}");
 }
 
@@ -496,22 +654,38 @@ void handle_move(AsyncWebServerRequest* request) {
     if (!isnan(z)) cmd += " Z" + String(z, 2);
     if (!isnan(e)) cmd += " E" + String(e, 2);
     cmd += " F" + String((int)f);
-    send_gcode(cmd);
+    bool relative = request->hasParam("relative") && request->getParam("relative")->value() == "true";
+    if (relative && !send_gcode("G91")) {
+        request->send(503, "application/json", "{\"success\":false,\"error\":\"Printer USB is not connected\"}");
+        return;
+    }
+    if (!send_gcode(cmd)) {
+        request->send(503, "application/json", "{\"success\":false,\"error\":\"Printer USB is not connected\"}");
+        return;
+    }
+    if (relative) send_gcode("G90");
     request->send(200, "application/json", "{\"success\":true}");
 }
 
 void handle_temp(AsyncWebServerRequest* request) {
-    if (request->hasParam("hotend")) send_gcode("M104 S" + request->getParam("hotend")->value());
-    if (request->hasParam("bed")) send_gcode("M140 S" + request->getParam("bed")->value());
+    bool sent = false;
+    if (request->hasParam("hotend")) sent = send_gcode("M104 S" + request->getParam("hotend")->value()) || sent;
+    if (request->hasParam("bed")) sent = send_gcode("M140 S" + request->getParam("bed")->value()) || sent;
+    if (!sent) {
+        request->send(503, "application/json", "{\"success\":false,\"error\":\"Printer USB is not connected\"}");
+        return;
+    }
     request->send(200, "application/json", "{\"success\":true}");
 }
 
 void handle_fan(AsyncWebServerRequest* request) {
     int fan = request->hasParam("fan_id") ? request->getParam("fan_id")->value().toInt() : 0;
     int speed = request->hasParam("speed") ? request->getParam("speed")->value().toInt() : 0;
-    if (g_cdc_serial && g_cdc_serial->connected()) {
-        g_cdc_serial->println("M106 P" + String(fan) + " S" + String(speed * 255 / 100));
+    if (!g_cdc_serial || !g_cdc_serial->connected()) {
+        request->send(503, "application/json", "{\"success\":false,\"error\":\"Printer USB is not connected\"}");
+        return;
     }
+    g_cdc_serial->println("M106 P" + String(fan) + " S" + String(speed * 255 / 100));
     request->send(200, "application/json", "{\"success\":true}");
 }
 
@@ -523,7 +697,10 @@ void handle_home(AsyncWebServerRequest* request) {
     if (x) cmd += " X";
     if (y) cmd += " Y";
     if (z) cmd += " Z";
-    send_gcode(cmd);
+    if (!send_gcode(cmd)) {
+        request->send(503, "application/json", "{\"success\":false,\"error\":\"Printer USB is not connected\"}");
+        return;
+    }
     request->send(200, "application/json", "{\"success\":true}");
 }
 
@@ -532,8 +709,13 @@ void handle_printer_sd_files(AsyncWebServerRequest* request) {
         request->send(503, "application/json", "{\"error\":\"Printer not connected\"}");
         return;
     }
-    // Request file list from printer
+    // M20 is asynchronous over USB.  Wait for the Marlin response before
+    // returning; otherwise the first page load races the parser and receives
+    // an empty cached list even though the SD card is present.
+    g_cdc_serial->println("M21");
+    delay(150);
     g_cdc_serial->println("M20");
+    delay(1000);
     // Build JSON response from cached printer_status.sd_files
     DynamicJsonDocument doc(8192);
     JsonArray arr = doc.to<JsonArray>();
@@ -578,7 +760,36 @@ void web_server_init() {
     // API Routes
     g_server.on("/api/status", HTTP_GET, handle_status);
     g_server.on("/api/files", HTTP_GET, handle_files);
-    g_server.on("/api/files/upload", HTTP_POST, [](AsyncWebServerRequest* r){r->send(200);}, handle_upload);
+    g_server.on("/api/files/upload", HTTP_POST, [](AsyncWebServerRequest* request) {
+        if (g_upload_success) {
+            // Uploads are staged on SPIFFS by the multipart callback.  Once
+            // the complete file is closed, move it to the printer SD card so
+            // Marlin executes it locally instead of relying on live USB
+            // streaming from the ESP32.
+            if (g_usb_connected && g_cdc_serial && g_cdc_serial->connected() && printer_status.sd_inserted) {
+                String printer_name = make_printer_sd_filename(g_upload_filename);
+                if (copy_spiffs_file_to_printer_sd(g_upload_filename, printer_name)) {
+                    SPIFFS.remove(gcode_storage_path(g_upload_filename));
+                    g_upload_filename = printer_name;
+                    g_upload_on_printer_sd = true;
+                } else {
+                    g_upload_warning = "File stored on ESP32, but SD transfer failed";
+                }
+            } else {
+                g_upload_warning = "File stored on ESP32; printer SD card is not available";
+            }
+
+            broadcast_file_list();
+            String message = g_upload_on_printer_sd ? "Stored on printer SD card" : "Stored on ESP32";
+            String json = "{\"success\":true,\"filename\":\"" + g_upload_filename + "\",\"message\":\"" + message + "\",\"on_printer_sd\":" + String(g_upload_on_printer_sd ? "true" : "false");
+            if (g_upload_warning.length()) json += ",\"warning\":\"" + g_upload_warning + "\"";
+            json += "}";
+            request->send(200, "application/json", json);
+        } else {
+            String error = g_upload_error.length() ? g_upload_error : "Upload did not complete";
+            request->send(400, "application/json", "{\"success\":false,\"error\":\"" + error + "\"}");
+        }
+    }, handle_upload);
     g_server.on("/api/files/delete", HTTP_DELETE, handle_delete);
     g_server.on("/api/files/copy-to-printer", HTTP_POST, handle_copy_to_printer);
     g_server.on("/api/print/start", HTTP_POST, handle_print_start);
@@ -592,6 +803,66 @@ void web_server_init() {
     g_server.on("/api/home", HTTP_POST, handle_home);
     g_server.on("/api/files/printer-sd", HTTP_GET, handle_printer_sd_files);
     g_server.on("/api/debug/request", HTTP_POST, handle_debug_request);
+    
+    g_server.on("/api/debug/request", HTTP_POST, handle_debug_request);
+    
+    // Debug: List SPIFFS files
+    g_server.on("/api/debug/spiffs", HTTP_GET, [](AsyncWebServerRequest* request) {
+        String json = "[";
+        File root = SPIFFS.open("/webui");
+        if (root) {
+            File file = root.openNextFile();
+            bool first = true;
+            while (file) {
+                if (!first) json += ",";
+                json += "{\"name\":\"" + String(file.name()) + "\",\"size\":" + String(file.size()) + "}";
+                first = false;
+                file = root.openNextFile();
+            }
+        }
+        json += "]";
+        request->send(200, "application/json", json);
+    });
+    
+    // Debug: Test page with inline JS to verify browser JS execution
+    g_server.on("/test", HTTP_GET, [](AsyncWebServerRequest* request) {
+        String html = "<!DOCTYPE html><html><head><title>Test</title></head><body>"
+            "<h1>ESP32-S3 Test Page</h1>"
+            "<div id='status'>Loading...</div>"
+            "<script>"
+            "document.getElementById('status').innerText = 'JS Working! Time: ' + new Date().toISOString();"
+            "console.log('Inline JS executed');"
+            "fetch('/api/status').then(r=>r.json()).then(d=>{"
+            "  document.getElementById('status').innerText += ' | API: ' + d.data.state;"
+            "}).catch(e=>{"
+            "  document.getElementById('status').innerText += ' | API Error: ' + e;"
+            "});"
+            "</script>"
+            "</body></html>";
+        request->send(200, "text/html", html);
+    });
+    
+    // Serve gzipped static files with proper Content-Encoding
+    g_server.on("/app.js", HTTP_GET, [](AsyncWebServerRequest* request){
+        AsyncWebServerResponse* response = request->beginResponse(SPIFFS, "/webui/app.js.gz", "application/javascript");
+        response->addHeader("Content-Encoding", "gzip");
+        request->send(response);
+    });
+    g_server.on("/styles.css", HTTP_GET, [](AsyncWebServerRequest* request){
+        AsyncWebServerResponse* response = request->beginResponse(SPIFFS, "/webui/styles.css.gz", "text/css");
+        response->addHeader("Content-Encoding", "gzip");
+        request->send(response);
+    });
+    g_server.on("/vendor.js", HTTP_GET, [](AsyncWebServerRequest* request){
+        AsyncWebServerResponse* response = request->beginResponse(SPIFFS, "/webui/vendor.js.gz", "application/javascript");
+        response->addHeader("Content-Encoding", "gzip");
+        request->send(response);
+    });
+    g_server.on("/charts.js", HTTP_GET, [](AsyncWebServerRequest* request){
+        AsyncWebServerResponse* response = request->beginResponse(SPIFFS, "/webui/charts.js.gz", "application/javascript");
+        response->addHeader("Content-Encoding", "gzip");
+        request->send(response);
+    });
     
     // Serve Web UI from SPIFFS
     g_server.serveStatic("/", SPIFFS, "/webui/").setDefaultFile("index.html");

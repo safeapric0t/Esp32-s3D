@@ -16,13 +16,8 @@ export default defineConfig({
     outDir: '../data/webui',
     assetsDir: '',
     emptyOutDir: true,
-    minify: 'terser',
-    terserOptions: {
-      compress: {
-        drop_console: true,
-        drop_debugger: true
-      }
-    },
+    minify: 'esbuild',
+    target: 'es2020',
     rollupOptions: {
       output: {
         entryFileNames: 'app.js',
@@ -37,5 +32,9 @@ export default defineConfig({
   base: './',
   define: {
     'process.env.NODE_ENV': '"production"'
+  },
+  esbuild: {
+    keepNames: true,
+    target: 'es2020'
   }
 })

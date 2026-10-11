@@ -76,5 +76,7 @@ export interface WSMessage {
 export interface ApiResponse {
   success: boolean
   message?: string
+  filename?: string
+  error?: string
   data?: any
 }

@@ -1,3 +1,4 @@
+import React from 'react'
 import { PrinterStatus } from '../types/printer'
 
 interface ControlPanelProps {
@@ -6,11 +7,11 @@ interface ControlPanelProps {
 }
 
 export function ControlPanel({ status, onSendGcode }: ControlPanelProps) {
-  const [jogDistance, setJogDistance] = useState(1)
-  const [hotendTemp, setHotendTemp] = useState(0)
-  const [bedTemp, setBedTemp] = useState(0)
-  const [fanSpeed, setFanSpeed] = useState(0)
-  const [customGcode, setCustomGcode] = useState('')
+  const [jogDistance, setJogDistance] = React.useState(1)
+  const [hotendTemp, setHotendTemp] = React.useState(0)
+  const [bedTemp, setBedTemp] = React.useState(0)
+  const [fanSpeed, setFanSpeed] = React.useState(0)
+  const [customGcode, setCustomGcode] = React.useState('')
 
   const handleMove = (axis: string, direction: number) => {
     const distance = jogDistance * direction
