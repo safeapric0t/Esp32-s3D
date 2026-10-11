@@ -1,105 +1,109 @@
 # Ender 3 S1 ESP32-S3 Controller
 
-Ender 3 S1 Marlin yazıcıyı ESP32-S3 üzerinden USB Host ile ağa bağlayan açık kaynaklı uzaktan kontrol projesi.
+An open-source remote controller for Marlin-based Ender 3 S1 printers. The ESP32-S3 connects to the printer through USB Host and exposes a local web dashboard for monitoring, printer control, file management, and remote G-code printing.
 
-Bu proje ile:
+## Features
 
-- nozzle ve tabla sıcaklıklarını izleyebilir,
-- X/Y/Z konumunu görebilir,
-- auto home ve jog hareketleri gönderebilir,
-- manuel G-code çalıştırabilir,
-- yazıcının SD kartındaki dosyaları listeleyip başlatabilir,
-- G-code dosyasını ESP32’ye yükleyip SD kart olmadan ESP32 üzerinden yazdırabilir,
-- baskı durumu ve ilerlemesini web arayüzünden izleyebilirsiniz.
+- Live hotend, bed, position, and print-progress monitoring
+- Web-based jog movement and auto-home controls
+- Manual G-code console
+- Printer SD-card file listing and SD printing
+- G-code upload to ESP32 storage
+- SD-independent printing by streaming a file from ESP32 SPIFFS over USB
+- Optional copy of ESP32 files to the printer SD card
+- WebSocket updates for live status and progress
+- AP mode for a standalone network or Station mode for a home Wi-Fi network
 
-> Proje yerel ağ kullanımı için tasarlanmıştır. İnternete doğrudan açmayın.
+> This project is designed for local-network use. Do not expose the device directly to the internet.
 
-## Donanım
+## Hardware
 
-- Creality Ender 3 S1 veya uyumlu Marlin tabanlı yazıcı
-- ESP32-S3 N16R8 kartı (16 MB Flash, 8 MB PSRAM)
-- Veri aktarımı destekleyen USB-C kablosu
-- Firmware yüklemek için uygun USB bağlantısı
+- Creality Ender 3 S1 or a compatible Marlin printer
+- ESP32-S3 N16R8 board
+  - 16 MB Flash
+  - 8 MB PSRAM
+- Data-capable USB-C cable
+- USB connection for flashing the ESP32-S3
 
-ESP32-S3 üzerindeki USB Host/OTG USB-C portunu yazıcının USB portuna bağlayın. Yalnızca şarj destekleyen kablo kullanmayın.
+Connect the printer to the ESP32-S3 USB Host/OTG USB-C port. Charge-only USB cables will not work.
 
-## Çalışma mantığı
+## How it works
 
 ```text
-Web tarayıcısı
-      │ HTTP REST + WebSocket
-      ▼
-ESP32-S3
-      │ USB Host CDC/ACM
-      ▼
-Ender 3 S1 Marlin
+Web browser
+    │ HTTP REST + WebSocket
+    ▼
+ESP32-S3 controller
+    │ USB Host CDC/ACM
+    ▼
+Ender 3 S1 Marlin firmware
 ```
 
-Dosya kaynakları ikiye ayrılır:
+There are two independent file sources:
 
-| Dosya kaynağı | Baskı yöntemi | SD kart gerekir mi? |
+| File source | Print method | Printer SD card required? |
 |---|---|---:|
-| Yazıcının SD kartı | Marlin `M23` + `M24` | Evet |
-| ESP32 SPIFFS | USB üzerinden G-code stream | Hayır |
+| Printer SD card | Marlin `M23` + `M24` | Yes |
+| ESP32 SPIFFS | USB G-code streaming | No |
 
-ESP32’ye yüklenen dosya, SD karttan bağımsız olarak ESP32 üzerinde saklanır ve `stream` yöntemiyle yazıcıya satır satır gönderilir.
+An uploaded ESP32 file stays in ESP32 storage and can be printed without a printer SD card.
 
-## Depoyu indirme
+## Requirements
+
+- VS Code with the PlatformIO extension, or PlatformIO CLI
+- Node.js and npm
+- A suitable ESP32-S3 USB driver on the host computer
+
+## Clone the repository
 
 ```bash
 git clone https://github.com/safeapric0t/Esp32-s3D.git
 cd Esp32-s3D
 ```
 
-Alternatif olarak GitHub sayfasından **Code → Download ZIP** seçilebilir.
+You can also use **Code → Download ZIP** on GitHub.
 
-## Gerekli yazılımlar
+## Wi-Fi configuration
 
-- VS Code ve PlatformIO eklentisi veya PlatformIO CLI
-- Node.js ve npm
-- ESP32-S3 için USB sürücüsü
+### Access Point mode (default)
 
-VS Code kullanıyorsanız projeyi `platformio.ini` dosyasının bulunduğu ana klasörden açın.
-
-## Wi-Fi ayarı
-
-Varsayılan yapılandırma erişim noktasıdır. Bu modda ev Wi-Fi bilgisi girmeniz gerekmez:
+The default firmware creates its own Wi-Fi network. No home Wi-Fi credentials are required:
 
 ```text
-Wi-Fi adı:   Ender3-Controller
-Şifre:       ender3controller
-Web adresi:  http://192.168.4.1
+SSID:       Ender3-Controller
+Password:   ender3controller
+Web address: http://192.168.4.1
 ```
 
-Bilgisayarınızı veya telefonunuzu bu ağa bağladıktan sonra tarayıcıda `http://192.168.4.1` adresini açın.
+Connect your phone or computer to `Ender3-Controller`, then open `http://192.168.4.1`.
 
-### ESP32’yi ev Wi-Fi ağına bağlama
+### Station mode (connect to your router)
 
-Ev ağınızdan erişmek istiyorsanız proje içinde `include/local_config.h` adında yeni bir dosya oluşturun:
+Create this local-only file before compiling:
+
+```text
+include/local_config.h
+```
+
+Put your network credentials in it:
 
 ```cpp
-#define LOCAL_WIFI_SSID "EV_WIFI_ADI"
-#define LOCAL_WIFI_PASSWORD "EV_WIFI_SIFRESI"
+#define LOCAL_WIFI_SSID "YOUR_WIFI_NAME"
+#define LOCAL_WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
 #define LOCAL_AP_MODE false
 ```
 
-Dosya yolu tam olarak şu olmalıdır:
-
-```text
-Esp32-s3D/include/local_config.h
-```
-
-Bu dosya `.gitignore` içindedir ve GitHub’a gönderilmez. Gerçek Wi-Fi adınızı veya şifrenizi `src/main.cpp`, `README.md` ya da başka takip edilen bir dosyaya yazmayın.
-
-Station modunda ESP32 açılışta seri monitöre aldığı IP adresini yazar:
+The file is ignored by Git and must not be committed. The ESP32 prints its assigned address to the serial monitor:
 
 ```text
 Connected! IP: 192.168.1.xxx
 ```
 
-Web arayüzünü bu IP ile açın. Bilgisayar ve ESP32 aynı yerel ağda olmalıdır.
+Open that address in a browser. The computer and ESP32 must be on the same local network.
 
-## Web arayüzünü derleme
+## Build the web interface
+
+The React/Vite source is in `web_ui_src/`:
 
 ```bash
 cd web_ui_src
@@ -108,164 +112,169 @@ npm run build
 cd ..
 ```
 
-Derleme çıktısı `data/webui/` klasörüne yazılır. Arayüz değişikliği yaptıktan sonra web dosya sistemini de yüklemeniz gerekir.
+The compiled interface is written to `data/webui/`.
 
-## Firmware’i derleme ve yükleme
+## Build and flash the firmware
 
-Önce kartın bilgisayardaki portunu bulun. Windows’ta örneğin `COM13` olabilir.
+Find the ESP32-S3 serial port first. On Windows it may be something like `COM13`.
 
-Sadece firmware yüklemek için:
+Flash firmware only:
 
 ```bash
 pio run -e esp32s3 -t upload --upload-port COM13
 ```
 
-`COM13` yerine kendi portunuzu yazın.
+Replace `COM13` with your actual port.
 
-Web arayüzünü de güncellediyseniz:
+If you rebuilt the web interface, upload the filesystem as well:
 
 ```bash
 pio run -e esp32s3 -t uploadfs --upload-port COM13
 ```
 
-> `uploadfs` ESP32’nin dahili dosya alanını yeniden yazar. ESP32 üzerinde saklanan G-code dosyalarını silebileceği için önce yedek alın. Normal firmware yüklemesi SPIFFS dosyalarını silmez.
+> `uploadfs` rewrites the ESP32 filesystem and can remove G-code files stored on the ESP32. Back up those files first. A normal firmware upload does not erase them.
 
-Seri monitör:
+Open the serial monitor with:
 
 ```bash
 pio device monitor -p COM13 -b 115200
 ```
 
-Seri monitörde USB cihazının bağlandığını ve IP adresini görmelisiniz.
+Look for a USB connection message and the Wi-Fi IP address.
 
-## Yazıcıyı bağlama sırası
+## Recommended startup order
 
-1. ESP32 firmware’ini yükleyin.
-2. ESP32’nin USB Host/OTG portunu yazıcıya bağlayın.
-3. Yazıcıyı açın.
-4. ESP32’nin USB enumeration mesajını bekleyin.
-5. Seri monitördeki IP adresini veya AP adresini tarayıcıda açın.
+1. Flash the firmware.
+2. Connect the ESP32-S3 Host/OTG port to the printer.
+3. Turn on the printer.
+4. Wait for USB enumeration to complete.
+5. Open the AP address or the Station-mode IP in a browser.
 
-Yazıcıyı ESP32 çalışırken kapatıp açarsanız USB ve SD listesi yeniden oluşana kadar birkaç saniye bekleyin.
+If the printer is power-cycled while the ESP32 is running, wait a few seconds for USB and SD information to be refreshed.
 
-## G-code dosyası yükleme ve yazdırma
+## Printing G-code
 
-### ESP32 üzerinden yazdırma
+### Print from ESP32 storage
 
-1. Web arayüzünde **Upload G-code** bölümünü açın.
-2. `.gcode`, `.gco` veya `.g` dosyanızı seçin.
-3. Yüklemenin tamamlanmasını bekleyin.
-4. Dosyanın kaynak bilgisinde `ESP32` ibaresini kontrol edin.
-5. **Start Print** ile başlatın.
+1. Open **G-code Files** or the dashboard upload card.
+2. Select a `.gcode`, `.gco`, or `.g` file.
+3. Wait for the upload to finish.
+4. Confirm that the source is shown as **ESP32**.
+5. Select **Print** or **Start print**.
 
-Bu yöntem yazıcının SD kartını kullanmaz. ESP32 dosyayı SPIFFS’ten açar ve USB üzerinden Marlin’e gönderir.
+The file is streamed from ESP32 storage and does not require a printer SD card.
 
-Uzun dosya adları SPIFFS yol sınırı nedeniyle kısaltılabilir. Örneğin `frc-bumper-keychain_PLA_21m49s.gcode`, arayüzde `frc-bumper-keychai.gcode` olarak görünebilir; bu aynı dosyadır.
+Long filenames may be shortened because of the ESP32 filesystem path limit. For example, `frc-bumper-keychain_PLA_21m49s.gcode` may appear as `frc-bumper-keychai.gcode`; it is still the same uploaded file.
 
-### Yazıcı SD kartından yazdırma
+### Print from the printer SD card
 
-1. SD kartı yazıcıya takın.
-2. Yazıcının SD kartı algıladığını bekleyin.
-3. **Files** ekranında SD dosyalarının görünmesini bekleyin.
-4. SD dosyasını seçip **Start Print** düğmesine basın.
+1. Insert the SD card into the printer.
+2. Wait until the printer reports that the card is ready.
+3. Open **G-code Files** and confirm the SD source tag.
+4. Select the SD file and press **Print**.
 
-SD karttan dosya listeleme ve SD’den baskı başlatma Marlin’in kendi `M20`, `M23` ve `M24` komutlarını kullanır.
+SD printing uses Marlin’s `M20`, `M23`, and `M24` commands.
 
-### ESP32 dosyasını SD karta kopyalama
+### Copy an ESP32 file to printer SD
 
-Arayüz dosyayı otomatik olarak SD karta kopyalamayı deneyebilir. Bunun çalışması Marlin’in `M28` / `M29` desteğine ve SD kartın yazılabilir olmasına bağlıdır. Yazıcı `open failed` döndürürse dosya yine ESP32’de kalır ve `stream` yöntemiyle yazdırılabilir.
+The interface can try to copy an ESP32 file to the printer SD card using Marlin `M28` / `M29`. This depends on the Marlin build and the card being writable. If the printer returns `open failed`, the file remains safe in ESP32 storage and can still be printed with the ESP32 streaming method.
 
-## Arayüz bölümleri
+## Interface sections
 
-- **Dashboard:** baskı durumu, ilerleme ve sıcaklıklar
-- **Files:** ESP32 dosyaları ve yazıcı SD dosyaları
-- **Printer Control:** sıcaklık, fan, jog hareketleri ve auto home
-- **Send G-code / Console:** manuel G-code gönderme ve yazıcı cevapları
-- **Camera:** kamera entegrasyonu için ayrılmış alan; bu sürümde kamera bağlantısı yoktur
+- **Dashboard:** active job, progress, temperatures, connection, and quick actions
+- **G-code Files:** ESP32 and printer SD files, upload, delete, copy, and print
+- **Printer Control:** temperature targets, fan control, jog movement, and auto home
+- **Console:** live serial messages and manual G-code commands
+- **Camera:** reserved for a future camera integration
+- **Settings:** local interface settings and connection information
+
+The current firmware does not include a camera connection.
 
 ## REST API
 
-| Endpoint | Method | Açıklama |
+| Endpoint | Method | Description |
 |---|---|---|
-| `/api/status` | GET | Sıcaklık, konum, bağlantı ve baskı durumu |
-| `/api/files` | GET | ESP32 ve yazıcı SD dosyaları |
-| `/api/files/printer-sd` | GET | Yalnızca yazıcı SD dosyaları |
-| `/api/files/upload` | POST | G-code’u ESP32’ye yükler, SD kopyasını deneyebilir |
-| `/api/files/download?name=...` | GET | ESP32’deki dosyayı indirir |
-| `/api/files/delete?name=...` | DELETE | ESP32 veya SD dosyasını siler |
-| `/api/files/copy-to-printer?name=...` | POST | ESP32 dosyasını SD’ye kopyalamayı dener |
-| `/api/print/start?file=...&mode=stream` | POST | ESP32 dosyasını başlatır |
-| `/api/print/start?file=...&mode=sd` | POST | SD dosyasını başlatır |
-| `/api/print/pause` | POST | Baskıyı duraklatır |
-| `/api/print/resume` | POST | Baskıyı devam ettirir |
-| `/api/print/cancel` | POST | Normal baskı durdurma |
-| `/api/gcode?command=...` | POST | Ham G-code gönderir |
-| `/api/move?...` | POST | Eksen hareketi |
-| `/api/temperature?...` | POST | Hotend ve tabla hedefi |
-| `/api/home?...` | POST | Auto home |
-| `/ws` | WebSocket | Canlı durum ve ilerleme olayları |
+| `/api/status` | GET | Temperatures, position, connection, and print state |
+| `/api/files` | GET | ESP32 and printer SD files |
+| `/api/files/printer-sd` | GET | Printer SD files only |
+| `/api/files/upload` | POST | Upload G-code to ESP32 and try SD copy |
+| `/api/files/download?name=...` | GET | Download an ESP32 G-code file |
+| `/api/files/delete?name=...` | DELETE | Delete an ESP32 or SD file |
+| `/api/files/copy-to-printer?name=...` | POST | Try to copy an ESP32 file to printer SD |
+| `/api/print/start?file=...&mode=stream` | POST | Start an ESP32 stream print |
+| `/api/print/start?file=...&mode=sd` | POST | Start an SD print |
+| `/api/print/pause` | POST | Pause a print |
+| `/api/print/resume` | POST | Resume a print |
+| `/api/print/cancel` | POST | Normal print cancellation |
+| `/api/gcode?command=...` | POST | Send raw G-code |
+| `/api/move?...` | POST | Move an axis |
+| `/api/temperature?...` | POST | Set hotend and bed targets |
+| `/api/home?...` | POST | Home selected axes |
+| `/ws` | WebSocket | Live status, progress, and events |
 
-Normal durdurma için arayüzdeki **Cancel/Stop** düğmesini kullanın. `M112` Marlin’in acil durdurma komutudur; yalnızca gerçek acil durumda kullanılmalıdır ve sonrasında yazıcının kapatılıp açılması gerekebilir.
+Use the normal **Stop/Cancel** action for a regular cancellation. `M112` is Marlin’s emergency shutdown command and may require a printer power cycle afterward.
 
-## Sorun giderme
+## Troubleshooting
 
-### ESP32’ye bağlanamıyorum
+### The web page does not open
 
-- AP modunda `Ender3-Controller` ağına bağlı olduğunuzu kontrol edin.
-- Station modunda bilgisayar ve ESP32’nin aynı Wi-Fi ağında olduğunu kontrol edin.
-- Seri monitörde yazan IP adresini kullanın.
-- USB kablosunun veri taşıdığından emin olun.
+- In AP mode, connect to `Ender3-Controller`.
+- In Station mode, make sure the computer and ESP32 are on the same network.
+- Use the IP printed by the serial monitor.
+- Refresh with Ctrl+F5 after uploading a new web filesystem.
 
-### USB yazıcı bağlantısı yok
+### The printer is not detected
 
-- ESP32-S3’ün Host/OTG portunu kullandığınızı kontrol edin.
-- Yazıcıyı kapatıp açın ve birkaç saniye bekleyin.
-- Seri monitörde `USB device CONNECTED` mesajını arayın.
+- Use the ESP32-S3 Host/OTG port.
+- Check that the USB cable carries data.
+- Power-cycle the printer and wait for enumeration.
+- Look for `USB device CONNECTED` in the serial monitor.
 
-### SD dosyaları görünmüyor
+### SD files are missing
 
-- SD kartın yazıcı tarafından tanındığını kontrol edin.
-- Yazıcıyı ve ESP32’yi yeniden başlatın.
-- Web sayfasında Ctrl+F5 ile önbelleği yenileyin.
+- Confirm that the printer detects the card.
+- Wait a few seconds after inserting or changing the card.
+- Restart the printer and ESP32 if necessary.
+- Refresh the file library.
 
-### ESP dosyası başlıyor görünmesine rağmen yazıcı tepki vermiyor
+### An ESP32 file starts but the printer does not react
 
-- Dosyanın kaynağının `ESP32` olduğundan emin olun.
-- ESP dosyası için `mode=stream`, SD dosyası için `mode=sd` kullanılmalıdır.
-- Küçük bir `G28` veya `M117 TEST` dosyasıyla USB akışını test edin.
-- Seri monitörde `GcodeStreamer: Started streaming` ve Marlin `ok` cevaplarını kontrol edin.
+- Confirm the file source is **ESP32**, not **SD**.
+- ESP32 files use `stream`; printer SD files use `sd`.
+- Test the USB path with a small safe file containing `G28` or `M117 TEST`.
+- Check for `GcodeStreamer: Started streaming` and Marlin `ok` responses in the serial monitor.
 
-### Upload başarılı fakat SD’ye kopyalama başarısız
+### Upload succeeds but SD copy fails
 
-Bu, yazıcının SD kartı okuyabildiği ancak `M28` ile yazamadığı anlamına gelebilir. SD kartın boş alanını, FAT32 formatını ve Marlin’in SD yazma desteğini kontrol edin. Kopyalama başarısız olsa bile ESP32 dosyası silinmez; `stream` yöntemiyle kullanılabilir.
+The printer may be able to read the card but not create files with `M28`. Check free space, FAT32 formatting, card health, and Marlin SD-write support. The ESP32 copy remains usable even when SD copy fails.
 
-## Proje yapısı
+## Project structure
 
 ```text
 Esp32-s3D/
-├── data/webui/             # Derlenmiş web arayüzü
-├── include/                # Başlıklar ve yerel Wi-Fi ayarı
-├── lib/                    # USB Host ve yardımcı kütüphaneler
+├── data/webui/             # Compiled web interface
+├── include/                # Headers and local Wi-Fi configuration
+├── lib/                    # USB Host and helper libraries
 ├── src/
-│   ├── main.cpp            # Wi-Fi, USB Host ve ana döngü
-│   ├── web_server.cpp      # REST API, WebSocket ve dosyalar
-│   ├── response_parser.h   # Marlin cevap/telemetri ayrıştırma
-│   ├── gcode_streamer.*    # ESP32’den G-code stream’i
-│   ├── command_scheduler.* # Komut/ACK yönetimi
-│   └── printer_manager.*   # Yazıcı durum yönetimi
-├── web_ui_src/             # React + TypeScript arayüz kaynağı
-├── partitions.csv          # Flash bölümlendirmesi
-├── platformio.ini          # PlatformIO ayarları
+│   ├── main.cpp            # Wi-Fi, USB Host, and main loop
+│   ├── web_server.cpp      # REST API, WebSocket, and file operations
+│   ├── response_parser.h   # Marlin response and telemetry parsing
+│   ├── gcode_streamer.*    # ESP32-to-printer G-code streaming
+│   ├── command_scheduler.* # Command and ACK scheduling
+│   └── printer_manager.*   # Printer state management
+├── web_ui_src/             # React + TypeScript source
+├── partitions.csv          # Flash partition layout
+├── platformio.ini          # PlatformIO configuration
 └── README.md
 ```
 
-## Güvenlik ve katkı
+## Security and contributions
 
-- Gerçek Wi-Fi bilgilerini commit etmeyin.
-- Kişisel G-code dosyalarını depoya eklemeyin.
-- Web sunucusunda kullanıcı hesabı veya TLS yoktur; cihazı internete açmayın.
-- Pull request göndermeden önce firmware’i `pio run -e esp32s3` ile derleyin ve web arayüzünü `npm run build` ile doğrulayın.
+- Never commit real Wi-Fi credentials.
+- Do not commit personal G-code files.
+- The web server has no user account system or TLS; keep it on a trusted local network.
+- Before opening a pull request, run `pio run -e esp32s3` and `npm run build`.
 
-## Lisans
+## License
 
-Bu proje MIT lisansı ile yayımlanmıştır.
+This project is released under the MIT License.
